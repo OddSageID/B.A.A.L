@@ -1,4 +1,5 @@
 import pg from 'pg';
+import { MigrationRunner } from './MigrationRunner.js';
 const { Pool } = pg;
 
 export class BaselineVault {
@@ -18,63 +19,15 @@ export class BaselineVault {
     return vault;
   }
 
+  static fromPool(pool) {
+    const vault = new BaselineVault();
+    vault.#pool = pool;
+    return vault;
+  }
+
+
   async #migrate() {
-    await this.#pool.query(`
-      CREATE TABLE IF NOT EXISTS subjects (
-        subject_id      TEXT        PRIMARY KEY,
-        enrolled_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-        consent_version INTEGER     NOT NULL DEFAULT 1,
-        opted_out       BOOLEAN     NOT NULL DEFAULT false,
-        metadata        JSONB
-      );
-      CREATE TABLE IF NOT EXISTS baselines (
-        id           BIGSERIAL   PRIMARY KEY,
-        subject_id   TEXT        NOT NULL REFERENCES subjects(subject_id),
-        dimension    TEXT        NOT NULL,
-        mean         NUMERIC     NOT NULL,
-        std_dev      NUMERIC     NOT NULL DEFAULT 0.1,
-        sample_count INTEGER     NOT NULL DEFAULT 1,
-        last_updated TIMESTAMPTZ NOT NULL DEFAULT now(),
-        UNIQUE (subject_id, dimension)
-      );
-      CREATE TABLE IF NOT EXISTS signal_events (
-        id          BIGSERIAL   PRIMARY KEY,
-        subject_id  TEXT        NOT NULL REFERENCES subjects(subject_id),
-        source      TEXT        NOT NULL,
-        dimensions  JSONB       NOT NULL,
-        deviation   JSONB,
-        recorded_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      );
-      CREATE TABLE IF NOT EXISTS interventions (
-        id             BIGSERIAL   PRIMARY KEY,
-        subject_id     TEXT        NOT NULL REFERENCES subjects(subject_id),
-        intent_class   TEXT        NOT NULL,
-        confidence     NUMERIC     NOT NULL,
-        plan           JSONB       NOT NULL,
-        result         JSONB,
-        outcome        TEXT,
-        outcome_weight NUMERIC,
-        vetoed         BOOLEAN     NOT NULL DEFAULT false,
-        veto_reason    TEXT,
-        executed_at    TIMESTAMPTZ NOT NULL DEFAULT now()
-      );
-      CREATE TABLE IF NOT EXISTS consent_records (
-        id                      BIGSERIAL   PRIMARY KEY,
-        subject_id              TEXT        NOT NULL REFERENCES subjects(subject_id),
-        active                  BOOLEAN     NOT NULL DEFAULT true,
-        opted_out               BOOLEAN     NOT NULL DEFAULT false,
-        max_permitted_intensity INTEGER     NOT NULL DEFAULT 3,
-        consented_modalities    TEXT[]      NOT NULL DEFAULT '{}',
-        consented_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
-        expires_at              TIMESTAMPTZ,
-        revoked_at              TIMESTAMPTZ
-      );
-      CREATE INDEX IF NOT EXISTS idx_baselines_subject     ON baselines       (subject_id);
-      CREATE INDEX IF NOT EXISTS idx_signal_events_subject ON signal_events   (subject_id, recorded_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_interventions_subject ON interventions    (subject_id, executed_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_interventions_class   ON interventions    (intent_class, executed_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_consent_active        ON consent_records  (subject_id, active) WHERE active = true;
-    `);
+    await MigrationRunner.run(this.#pool);
   }
 
   async getBaseline(subjectId) {
@@ -88,6 +41,29 @@ export class BaselineVault {
       dimensions[row.dimension] = { mean: parseFloat(row.mean), stdDev: parseFloat(row.std_dev), sampleCount: row.sample_count, lastUpdated: row.last_updated };
     }
     return { subjectId, dimensions };
+  }
+
+
+  async getConsentRecord(subjectId) {
+    const result = await this.#pool.query(
+      `SELECT active, opted_out, max_permitted_intensity, consented_modalities, consented_at, expires_at
+       FROM consent_records
+       WHERE subject_id = $1
+       ORDER BY id DESC
+       LIMIT 1`,
+      [subjectId]
+    );
+    if (result.rows.length === 0) return null;
+    const row = result.rows[0];
+    return {
+      subjectId,
+      active: row.active,
+      optedOut: row.opted_out,
+      maxPermittedIntensity: row.max_permitted_intensity,
+      consentedModalities: row.consented_modalities ?? [],
+      consentedAt: row.consented_at,
+      expiresAt: row.expires_at,
+    };
   }
 
   async updateBaseline(subjectId, signal, weight = 0.05) {
@@ -141,13 +117,47 @@ export class BaselineVault {
         [subjectId, JSON.stringify(metadata)]
       );
       await client.query(
-        `INSERT INTO consent_records (subject_id, active, consented_modalities, max_permitted_intensity)
-         VALUES ($1, false, '{}', 1) ON CONFLICT DO NOTHING`,
+        `INSERT INTO consent_records (subject_id, active, opted_out, consented_modalities, max_permitted_intensity, consented_at)
+         VALUES ($1, false, false, '{}', 1, now())`,
         [subjectId]
       );
       await client.query('COMMIT');
     } catch (err) { await client.query('ROLLBACK'); throw err; }
     finally { client.release(); }
+  }
+
+
+
+  async activateConsent(subjectId, modalities = [], maxIntensity = 3) {
+    const client = await this.#pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `UPDATE consent_records SET active = false WHERE subject_id = $1 AND active = true`,
+        [subjectId]
+      );
+      await client.query(
+        `INSERT INTO consent_records (subject_id, active, opted_out, max_permitted_intensity, consented_modalities, consented_at, revoked_at)
+         VALUES ($1, true, false, $3, $2::text[], now(), null)`,
+        [subjectId, modalities, maxIntensity]
+      );
+      await client.query('COMMIT');
+    } catch (err) { await client.query('ROLLBACK'); throw err; }
+    finally { client.release(); }
+  }
+
+  async revokeConsent(subjectId) {
+    await this.#pool.query(
+      `UPDATE consent_records
+       SET active = false, opted_out = true, revoked_at = now()
+       WHERE subject_id = $1 AND active = true`,
+      [subjectId]
+    );
+  }
+
+  async health() {
+    try { await this.#pool.query('SELECT 1'); return { connected: true }; }
+    catch (err) { return { connected: false, error: err.message }; }
   }
 
   async disconnect() { await this.#pool.end(); }

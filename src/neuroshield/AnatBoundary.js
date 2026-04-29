@@ -26,13 +26,16 @@ export class AnatBoundary {
   ]);
 
   #interventionLog = new Map();
+  #consentProvider = null;
+
+  constructor({ consentProvider = null } = {}) { this.#consentProvider = consentProvider; }
 
   async evaluate({ plan, intent, subjectId }) {
     if (plan.steps.some(s => s.intensity === Intensity.OVERRIDE))
       return this.#veto(VetoReason.OVERRIDE_NEVER_PERMITTED, { message: 'OVERRIDE requires explicit human authorization.', plan });
 
     const consent = await this.#getConsentRecord(subjectId);
-    if (!consent.active)  return this.#veto(VetoReason.CONSENT_NOT_ESTABLISHED, { message: `No active consent for ${subjectId}`, plan });
+    if (!consent || !consent.active)  return this.#veto(VetoReason.CONSENT_NOT_ESTABLISHED, { message: `No active consent for ${subjectId}`, plan });
     if (consent.optedOut) return this.#veto(VetoReason.SUBJECT_OPT_OUT_ACTIVE,  { message: `Subject ${subjectId} opted out`, plan });
 
     const rateCheck = this.#checkRateLimits(subjectId, plan);
@@ -80,12 +83,11 @@ export class AnatBoundary {
   }
 
   async #getConsentRecord(subjectId) {
-    return {
-      subjectId, active: true, optedOut: false,
-      maxPermittedIntensity: Intensity.PROMPT,
-      consentedModalities:   Object.values(Modality),
-      consentedAt: new Date('2024-01-01'), expiresAt: null,
-    };
+    if (this.#consentProvider?.getConsentRecord) {
+      const consent = await this.#consentProvider.getConsentRecord(subjectId);
+      if (consent) return consent;
+    }
+    return null;
   }
 
   #checkRateLimits(subjectId, plan) {

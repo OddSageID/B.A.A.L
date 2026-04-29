@@ -40,6 +40,8 @@ export class ResolutionMonitor {
     await this.#publisher.publish(subjectId, deviation, signalTimestamp);
   }
 
+  health() { return { connected: Boolean(this.#subscriber?.connected && this.#publisher?.connected) }; }
+
   get activeWindowCount()   { return this.#windows.size; }
   getWindowState(subjectId) { return this.#windows.get(subjectId) ?? null; }
 
