@@ -1,0 +1,23 @@
+{
+  "name": "baal",
+  "version": "0.1.0",
+  "description": "Behavioral Anticipatory Autonomy Layer — agentic cognitive protection daemon",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev":   "node --watch index.js",
+    "test":  "node --experimental-vm-modules node_modules/.bin/jest"
+  },
+  "dependencies": {
+    "amqplib": "^0.10.3",
+    "pg":      "^8.11.3",
+    "redis":   "^4.6.13"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
