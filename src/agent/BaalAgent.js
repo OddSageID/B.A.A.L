@@ -8,6 +8,8 @@ import { BaselineVault }     from '../memory/BaselineVault.js';
 import { AgentMemory }       from '../memory/AgentMemory.js';
 import { EventQueue }        from '../transport/EventQueue.js';
 import { BaalLogger }        from '../utils/BaalLogger.js';
+import { BaalMetrics }       from '../observability/BaalMetrics.js';
+import { HealthServer }      from '../observability/HealthServer.js';
 
 export const AgentState = Object.freeze({
   OBSERVING: 'OBSERVING', INFERRING: 'INFERRING', PLANNING: 'PLANNING',
@@ -33,6 +35,9 @@ export class BaalAgent {
   #monitor = null; #logger = null;
   #subjects = new Map();
   #running  = false;
+  #metrics = new BaalMetrics();
+  #healthServer = null;
+  #startedAt = Date.now();
 
   constructor(config = {}) {
     this.config = {
@@ -55,9 +60,11 @@ export class BaalAgent {
     this.#storm   = new StormEngine({ threshold: this.config.inferenceThreshold });
     this.#cloud   = new CloudPlanner({ depth: this.config.planningDepth });
     this.#war     = new WarExecutor();
-    this.#anat    = new AnatBoundary();
+    this.#anat    = new AnatBoundary({ consentProvider: this.#vault });
     this.#monitor = await ResolutionMonitor.create();
     this.#war.setMonitor(this.#monitor);
+    this.#healthServer = new HealthServer({ deps: { vault: this.#vault, queue: this.#queue, monitor: this.#monitor, metrics: this.#metrics, startedAt: this.#startedAt }, port: parseInt(process.env.BAAL_HEALTH_PORT ?? '8787') });
+    await this.#healthServer.start();
     this.#logger.storm('B.A.A.L. initialized — The Storm is ready');
   }
 
@@ -95,15 +102,18 @@ export class BaalAgent {
     if (!clearance.approved) {
       this.#transition(session, AgentState.VETOED);
       this.#logger.anat('Vetoed by Anat', { subjectId, reason: clearance.reason });
+      this.#metrics.markVeto(clearance.reason);
       await this.#tool(TOOLS.ESCALATE_TO_ANAT, { plan, intent, subjectId, reason: clearance.reason });
       return;
     }
     this.#transition(session, AgentState.DECLARING);
     this.#logger.declare('War declared — intervention authorized', { subjectId });
     this.#transition(session, AgentState.EXECUTING);
+    this.#metrics.markIntervention(intent.primary?.class);
     const result = await this.#tool(TOOLS.EXECUTE_INTERVENTION, { plan, subjectId });
     this.#transition(session, AgentState.EVALUATING);
     const evaluation = await this.#tool(TOOLS.EVALUATE_OUTCOME, { intent, plan, result, subjectId });
+    this.#metrics.markResolution(evaluation.outcome);
     await this.#tool(TOOLS.UPDATE_BASELINE, { subjectId, signal, weight: evaluation.outcomeWeight });
     this.#memory.record(subjectId, { intent, plan, result, evaluation });
     this.#logger.declare('Cycle complete', { subjectId, outcome: evaluation.outcome });
@@ -139,6 +149,7 @@ export class BaalAgent {
     await this.#queue.close();
     await this.#vault.disconnect();
     await this.#monitor.shutdown();
+    await this.#healthServer?.stop();
     this.#logger.storm('B.A.A.L. shutdown — The Gaze closes');
   }
 }

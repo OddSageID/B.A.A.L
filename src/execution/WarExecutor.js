@@ -1,6 +1,6 @@
 import { Modality, Intensity } from '../planning/CloudPlanner.js';
 import { BaalLogger }          from '../utils/BaalLogger.js';
-import { ResolutionMonitor }   from './ResolutionMonitor.js';
+import { createDefaultDeliveryMap } from './adapters/DeliveryAdapters.js';
 
 export const Outcome = Object.freeze({
   RESOLVED:           'RESOLVED',
@@ -13,18 +13,10 @@ export const Outcome = Object.freeze({
 export class WarExecutor {
   #logger  = new BaalLogger({ name: 'WarExecutor' });
   #monitor = null;
+  #deliveryMap = createDefaultDeliveryMap();
 
   setMonitor(monitor) { this.#monitor = monitor; }
-
-  static DELIVERY_MAP = {
-    [Modality.HAPTIC]:        async (step, subjectId) => ({ delivered: true,  channel: 'haptic',        cue: step.cue, subjectId }),
-    [Modality.AUDITORY]:      async (step, subjectId) => ({ delivered: true,  channel: 'auditory',      cue: step.cue, subjectId }),
-    [Modality.VISUAL]:        async (step, subjectId) => ({ delivered: true,  channel: 'visual',        cue: step.cue, subjectId }),
-    [Modality.COGNITIVE]:     async (step, subjectId) => ({ delivered: true,  channel: 'cognitive',     cue: step.cue, subjectId }),
-    [Modality.ENVIRONMENTAL]: async (step, subjectId) => ({ delivered: true,  channel: 'environmental', cue: step.cue, subjectId }),
-    [Modality.NOTIFICATION]:  async (step, subjectId) => ({ delivered: true,  channel: 'notification',  cue: step.cue, subjectId }),
-    [Modality.SILENT_LOG]:    async (step, subjectId) => ({ delivered: false, channel: 'silent_log',    cue: step.cue, subjectId }),
-  };
+  setDeliveryMap(deliveryMap = {}) { this.#deliveryMap = { ...this.#deliveryMap, ...deliveryMap }; }
 
   static RESOLUTION_WINDOW_MS = {
     [Intensity.WHISPER]:  2000,
@@ -45,7 +37,7 @@ export class WarExecutor {
       if (step.condition && !this.#evaluateCondition(step.condition, executionLog)) continue;
       if (step.delayMs > 0) await this.#delay(step.delayMs);
       this.#logger.declare('Executing step', { subjectId, step: step.step, modality: step.modality, intensity: step.intensity });
-      const deliveryHandler = WarExecutor.DELIVERY_MAP[step.modality];
+      const deliveryHandler = this.#deliveryMap[step.modality];
       if (!deliveryHandler) continue;
       let deliveryResult;
       try {

@@ -22,6 +22,7 @@ export class ResolutionSignal {
 
 export class ResolutionPublisher {
   #client = null;
+  #connected = false;
   #active = new Set();
 
   static async connect(url = process.env.REDIS_URL ?? 'redis://localhost:6379') {
@@ -29,6 +30,7 @@ export class ResolutionPublisher {
     pub.#client = createClient({ url });
     pub.#client.on('error', (err) => console.error('[ResolutionPublisher] Redis error', err));
     await pub.#client.connect();
+    pub.#connected = true;
     return pub;
   }
 
@@ -42,17 +44,21 @@ export class ResolutionPublisher {
     await this.#client.publish(channelFor(subjectId), signal.serialize());
   }
 
-  async disconnect() { await this.#client.disconnect(); }
+  get connected() { return this.#connected; }
+
+  async disconnect() { await this.#client.disconnect(); this.#connected = false; }
 }
 
 export class ResolutionSubscriber {
   #client = null;
+  #connected = false;
 
   static async connect(url = process.env.REDIS_URL ?? 'redis://localhost:6379') {
     const sub = new ResolutionSubscriber();
     sub.#client = createClient({ url });
     sub.#client.on('error', (err) => console.error('[ResolutionSubscriber] Redis error', err));
     await sub.#client.connect();
+    sub.#connected = true;
     return sub;
   }
 
@@ -75,5 +81,7 @@ export class ResolutionSubscriber {
     });
   }
 
-  async disconnect() { await this.#client.disconnect(); }
+  get connected() { return this.#connected; }
+
+  async disconnect() { await this.#client.disconnect(); this.#connected = false; }
 }
