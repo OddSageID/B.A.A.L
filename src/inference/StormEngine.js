@@ -38,7 +38,8 @@ export class StormEngine {
     const candidates = [];
     for (const rule of StormEngine.INFERENCE_RULES) {
       const confidence = this.#evaluateRule(rule, signal, deviation);
-      if (confidence > 0) candidates.push({ class: rule.class, confidence: confidence * rule.weight, ruleId: rule.id });
+      // Clamp: rule weights >1 amplify match strength but confidence is [0,1].
+      if (confidence > 0) candidates.push({ class: rule.class, confidence: Math.min(confidence * rule.weight, 1.0), ruleId: rule.id });
     }
     candidates.sort((a, b) => b.confidence - a.confidence);
     const weighted = this.#applyHistoryWeighting(candidates, history);

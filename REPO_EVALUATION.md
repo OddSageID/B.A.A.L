@@ -19,11 +19,17 @@ The codebase is coherent, structured, and runnable, with reasonable defaults and
 - Explicit intervention intensity ladder and architectural block on autonomous override.
 - Session/history-aware behavior via `AgentMemory`.
 
-### Gaps to address for production
-- No automated tests included despite Jest dependency.
-- Some modules are scaffold-like (execution channels assume downstream actuator implementations).
-- Missing observability and operations hardening (metrics, tracing, retries/backoff strategy by failure class, SLOs).
-- Security/compliance posture is implied but not fully implemented (authn/authz, encryption strategy, retention policies, consent lifecycle ops).
+### Gaps addressed since initial evaluation
+- Automated tests: 69 unit/integration tests on `node:test` (jest dependency removed); CI runs on Node 20/22.
+- Observability: `/health` (503 on degraded dependencies) and `/metrics` endpoints, phase-tagged structured logging.
+- Failure-class handling: poison-message DLQ policy, per-subject intervention concurrency guard, durable veto/intervention audit trail.
+- Consent lifecycle ops: activation/revocation APIs, fail-closed enforcement of expiry, per-modality grants, intensity ceilings, and rate limits; subjects auto-enroll without consent.
+
+### Remaining gaps for production
+- Delivery adapters are stubs — real actuator integrations (haptics, notifications) are deployment-specific.
+- No distributed tracing; metrics are in-process JSON, not Prometheus-format; no SLOs defined.
+- Single-instance design: no leader election or horizontal sharding of subjects.
+- Encryption-at-rest strategy and retention policies remain deployment concerns.
 - Potentially sensitive domain requires formal validation, human factors testing, and strong governance before real-world deployment.
 
 ## Practical use cases

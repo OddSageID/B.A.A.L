@@ -1,42 +1,99 @@
-import { describe, test, expect, jest } from '@jest/globals';
+import { describe, test } from 'node:test';
+import assert from 'node:assert/strict';
 import { BaselineVault } from '../../src/memory/BaselineVault.js';
 
-function makePool() {
+function makeClient() {
+  const calls = [];
   return {
-    query: jest.fn(),
-    connect: jest.fn(async () => ({
-      query: jest.fn(),
-      release: jest.fn(),
-    })),
+    calls,
+    query: async (sql, params) => { calls.push({ sql, params }); return { rows: [], rowCount: 0 }; },
+    release: () => { calls.push({ sql: '<release>' }); },
   };
 }
 
-describe('BaselineVault consent transitions', () => {
-  test('returns null when no consent record exists', async () => {
+function makePool(client = makeClient()) {
+  const calls = [];
+  return {
+    calls, client,
+    query: async (sql, params) => { calls.push({ sql, params }); return { rows: [], rowCount: 0 }; },
+    connect: async () => client,
+  };
+}
+
+const sqlCalls = (calls) => calls.map(c => c.sql).filter(s => s !== '<release>');
+
+describe('BaselineVault consent lifecycle', () => {
+  test('getConsentRecord returns null when no record exists', async () => {
     const pool = makePool();
-    pool.query.mockResolvedValueOnce({ rows: [] });
+    const vault = BaselineVault.fromPool(pool);
+    assert.equal(await vault.getConsentRecord('s1'), null);
+    assert.match(pool.calls[0].sql, /FROM consent_records/);
+    assert.deepEqual(pool.calls[0].params, ['s1']);
+  });
+
+  test('getConsentRecord maps row fields', async () => {
+    const pool = makePool();
+    pool.query = async () => ({ rows: [{ active: true, opted_out: false, max_permitted_intensity: 3, consented_modalities: ['haptic'], consented_at: 't0', expires_at: null }] });
     const vault = BaselineVault.fromPool(pool);
     const rec = await vault.getConsentRecord('s1');
-    expect(rec).toBeNull();
+    assert.deepEqual(rec, {
+      subjectId: 's1', active: true, optedOut: false, maxPermittedIntensity: 3,
+      consentedModalities: ['haptic'], consentedAt: 't0', expiresAt: null,
+    });
   });
 
-  test('activateConsent writes active consent row', async () => {
+  test('activateConsent runs in a transaction and deactivates prior consent', async () => {
     const pool = makePool();
-    const client = { query: jest.fn(), release: jest.fn() };
-    pool.connect.mockResolvedValue(client);
     const vault = BaselineVault.fromPool(pool);
     await vault.activateConsent('s1', ['haptic', 'auditory'], 3);
-    expect(client.query).toHaveBeenCalledWith('BEGIN');
-    expect(client.query).toHaveBeenCalledWith(expect.stringContaining('UPDATE consent_records'), ['s1']);
-    expect(client.query).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO consent_records'), ['s1', ['haptic', 'auditory'], 3]);
-    expect(client.query).toHaveBeenCalledWith('COMMIT');
+    const sqls = sqlCalls(pool.client.calls);
+    assert.equal(sqls[0], 'BEGIN');
+    assert.match(sqls[1], /INSERT INTO subjects/);
+    assert.match(sqls[2], /UPDATE consent_records SET active = false/);
+    assert.match(sqls[3], /INSERT INTO consent_records/);
+    assert.equal(sqls[4], 'COMMIT');
   });
 
-  test('revokeConsent deactivates active rows and stamps revoked_at', async () => {
+  test('activateConsent rolls back on failure', async () => {
     const pool = makePool();
-    pool.query.mockResolvedValueOnce({ rowCount: 1 });
+    const original = pool.client.query.bind(pool.client);
+    pool.client.query = async (sql, params) => {
+      if (/INSERT INTO consent_records/.test(sql)) throw new Error('boom');
+      return original(sql, params);
+    };
+    const vault = BaselineVault.fromPool(pool);
+    await assert.rejects(() => vault.activateConsent('s1', ['haptic'], 2), /boom/);
+    assert.ok(sqlCalls(pool.client.calls).includes('ROLLBACK'));
+  });
+
+  test('revokeConsent deactivates and stamps revoked_at', async () => {
+    const pool = makePool();
     const vault = BaselineVault.fromPool(pool);
     await vault.revokeConsent('s1');
-    expect(pool.query).toHaveBeenCalledWith(expect.stringContaining('UPDATE consent_records'), ['s1']);
+    assert.match(pool.calls[0].sql, /SET active = false, opted_out = true, revoked_at = now\(\)/);
+    assert.deepEqual(pool.calls[0].params, ['s1']);
+  });
+});
+
+describe('BaselineVault.updateBaseline', () => {
+  test('auto-enrolls the subject before writing (regression: first event FK crash)', async () => {
+    const pool = makePool();
+    const vault = BaselineVault.fromPool(pool);
+    await vault.updateBaseline('new-subject', { source: 'behavioral', dimensions: { cognitive_load: 0.5 } }, 0.05);
+    const sqls = sqlCalls(pool.client.calls);
+    assert.equal(sqls[0], 'BEGIN');
+    assert.match(sqls[1], /INSERT INTO subjects .*ON CONFLICT \(subject_id\) DO NOTHING/);
+    assert.match(sqls[2], /INSERT INTO baselines/);
+    assert.match(sqls[3], /INSERT INTO signal_events/);
+    assert.equal(sqls.at(-1), 'COMMIT');
+  });
+
+  test('skips null dimensions', async () => {
+    const pool = makePool();
+    const vault = BaselineVault.fromPool(pool);
+    await vault.updateBaseline('s1', { source: 'eeg', dimensions: { cognitive_load: null, arousal_level: 0.4 } });
+    const baselineWrites = pool.client.calls.filter(c => /INSERT INTO baselines/.test(c.sql));
+    assert.equal(baselineWrites.length, 1);
+    assert.equal(baselineWrites[0].params[1], 'arousal_level');
   });
 });

@@ -80,11 +80,61 @@ B.A.A.L. carries this arc deliberately:
 ### Quick Start
 
 ```bash
-docker-compose up -d
+docker compose up -d --wait   # PostgreSQL, RabbitMQ, Redis (with healthchecks)
 npm install
 cp .env.example .env
+npm test                      # 69 tests, no infrastructure required
 npm start
 ```
+
+Schema migrations in `db/migrations/*.sql` run automatically at startup and
+are recorded in `schema_migrations`.
+
+---
+
+## Operations
+
+### Health & metrics
+
+A localhost-only HTTP server (configurable via `BAAL_HEALTH_PORT` / `BAAL_HEALTH_HOST`):
+
+| Endpoint | Behavior |
+|---|---|
+| `GET /health` | `200` when Postgres, RabbitMQ, and Redis are all reachable; `503 degraded` otherwise |
+| `GET /metrics` | JSON counters: interventions by intent class, vetoes by reason, resolution outcomes |
+
+### Consent lifecycle
+
+Subjects are auto-enrolled on their first signal **without consent** — every
+intervention is vetoed (`CONSENT_NOT_ESTABLISHED`) until consent is activated:
+
+```js
+await vault.activateConsent(subjectId, ['haptic', 'auditory'], Intensity.SIGNAL);
+await vault.revokeConsent(subjectId);   // immediate, fail-closed
+```
+
+Consent is checked on every cycle: active flag, opt-out, expiry timestamp,
+per-modality grants, and the intensity ceiling.
+
+### Failure policy
+
+| Failure | Behavior |
+|---|---|
+| Malformed / stale / future-dated event | Dead-lettered to `baal.dlq`, never processed |
+| Handler error (e.g. DB blip) | Redelivered once, then dead-lettered — no poison loops |
+| Concurrent signals for one subject | Perception always runs; only one intervention in flight per subject, later signals feed the open resolution window |
+| Audit write failure | Logged, never breaks the intervention loop |
+| Escalation channel down | Logged, veto still enforced |
+
+### Testing
+
+```bash
+npm test        # node:test — unit + integration, zero test dependencies
+npm run check   # syntax-check every source file
+```
+
+The integration suite drives the real Gaze → Storm → Cloud → Anat → War
+pipeline against in-memory fakes at the Postgres/RabbitMQ/Redis boundaries.
 
 ---
 
