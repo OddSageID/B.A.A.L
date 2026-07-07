@@ -81,6 +81,22 @@ describe('AnatBoundary.evaluate', () => {
     assert.equal(res.modifiedPlan.steps.length, 2);
   });
 
+  test('durable intervention counts enforce limits across restarts', async () => {
+    // Simulates a fresh process (empty in-memory log) whose consent provider
+    // reports the subject already hit today's PROMPT cap in the database.
+    const provider = {
+      getConsentRecord: async () => ({ ...fullConsent }),
+      countRecentInterventions: async () => ({ lastHour: 0, lastDay: 15 }),
+    };
+    const anat = new AnatBoundary({ consentProvider: provider });
+    const res = await anat.evaluate({
+      plan: plan([step(Intensity.PROMPT, Modality.NOTIFICATION)], { requiresHuman: true }),
+      intent: intent(), subjectId: 's1',
+    });
+    assert.equal(res.approved, false);
+    assert.equal(res.reason, VetoReason.RATE_LIMIT_EXCEEDED);
+  });
+
   test('enforces hourly rate limits per subject', async () => {
     const anat = new AnatBoundary({ consentProvider: consentOf({}) });
     const promptPlan = () => plan([step(Intensity.PROMPT, Modality.NOTIFICATION)], { requiresHuman: true });

@@ -28,6 +28,38 @@ describe('GazeEngine.computeDeviation', () => {
   });
 });
 
+describe('GazeEngine calibration and drift', () => {
+  const engine = new GazeEngine({ vault: null });
+  const baselineWith = (extra) => ({
+    dimensions: { cognitive_load: { mean: 0.2, stdDev: 0.05, ...extra } },
+  });
+
+  test('immature baselines are calibrating — never significant', () => {
+    const signal = { dimensions: { cognitive_load: 1 } };
+    const res = engine.computeDeviation(signal, baselineWith({ sampleCount: 5 }), { minSamples: 30 });
+    assert.equal(res.significant, false);
+    assert.equal(res.reason, 'calibrating');
+  });
+
+  test('mature baselines pass the calibration gate', () => {
+    const signal = { dimensions: { cognitive_load: 1 } };
+    const res = engine.computeDeviation(signal, baselineWith({ sampleCount: 30 }), { minSamples: 30 });
+    assert.notEqual(res.reason, 'calibrating');
+  });
+
+  test('detectDrift flags dimensions that walked from their pinned reference', () => {
+    const baseline = { dimensions: {
+      cognitive_load: { mean: 0.55, stdDev: 0.05, referenceMean: 0.2 },  // drift 0.35
+      arousal_level:  { mean: 0.25, stdDev: 0.05, referenceMean: 0.2 },  // drift 0.05
+      system_mode:    { mean: 0.9,  stdDev: 0.05, referenceMean: null }, // unpinned: ignored
+    } };
+    const drifted = engine.detectDrift(baseline, { driftThreshold: 0.2 });
+    assert.equal(drifted.length, 1);
+    assert.equal(drifted[0].dim, 'cognitive_load');
+    assert.deepEqual(engine.detectDrift(null), []);
+  });
+});
+
 describe('GazeEngine.readSignal', () => {
   const engine = new GazeEngine({ vault: null });
   const session = { interventions: 2, vetoes: 1, createdAt: Date.now() - 5000 };

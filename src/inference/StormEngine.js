@@ -13,6 +13,9 @@ export const IntentClass = Object.freeze({
 });
 
 export class StormEngine {
+  /** Bump whenever INFERENCE_RULES change — written to the audit trail. */
+  static RULESET_VERSION = 'storm-rules/2';
+
   #threshold = 0.72;
 
   static INFERENCE_RULES = [
@@ -44,7 +47,7 @@ export class StormEngine {
     candidates.sort((a, b) => b.confidence - a.confidence);
     const weighted = this.#applyHistoryWeighting(candidates, history);
     const primary  = weighted[0] ?? { class: IntentClass.UNKNOWN, confidence: 0, ruleId: null };
-    return { primary, candidates: weighted, inferredAt: Date.now(), confident: primary.confidence >= this.#threshold, severity: deviation.severity, rawDeviation: deviation };
+    return { primary, candidates: weighted, inferredAt: Date.now(), confident: primary.confidence >= this.#threshold, severity: deviation.severity, rawDeviation: deviation, rulesetVersion: StormEngine.RULESET_VERSION };
   }
 
   #evaluateRule(rule, signal, deviation) {

@@ -31,13 +31,20 @@ export class BaselineVault {
 
   async getBaseline(subjectId) {
     const result = await this.#pool.query(
-      `SELECT dimension, mean, std_dev, sample_count, last_updated FROM baselines WHERE subject_id = $1`,
+      `SELECT dimension, mean, std_dev, sample_count, reference_mean, last_updated
+       FROM baselines WHERE subject_id = $1`,
       [subjectId]
     );
     if (result.rows.length === 0) return null;
     const dimensions = {};
     for (const row of result.rows) {
-      dimensions[row.dimension] = { mean: parseFloat(row.mean), stdDev: parseFloat(row.std_dev), sampleCount: row.sample_count, lastUpdated: row.last_updated };
+      dimensions[row.dimension] = {
+        mean: parseFloat(row.mean),
+        stdDev: parseFloat(row.std_dev),
+        sampleCount: row.sample_count,
+        referenceMean: row.reference_mean == null ? null : parseFloat(row.reference_mean),
+        lastUpdated: row.last_updated,
+      };
     }
     return { subjectId, dimensions };
   }
@@ -64,7 +71,12 @@ export class BaselineVault {
     };
   }
 
-  async updateBaseline(subjectId, signal, weight = 0.05) {
+  /**
+   * Idempotent when eventId is provided: a duplicate event commits nothing
+   * and returns { duplicate: true }. Pins a reference mean per dimension once
+   * sample_count reaches pinAfterSamples (baseline-poisoning defense).
+   */
+  async updateBaseline(subjectId, signal, weight = 0.05, { eventId = null, pinAfterSamples = 30 } = {}) {
     const client = await this.#pool.connect();
     try {
       await client.query('BEGIN');
@@ -74,6 +86,16 @@ export class BaselineVault {
         `INSERT INTO subjects (subject_id) VALUES ($1) ON CONFLICT (subject_id) DO NOTHING`,
         [subjectId]
       );
+      const eventInsert = await client.query(
+        `INSERT INTO signal_events (subject_id, source, dimensions, event_id)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (event_id) DO NOTHING`,
+        [subjectId, signal.source, JSON.stringify(signal.dimensions), eventId]
+      );
+      if (eventId != null && eventInsert.rowCount === 0) {
+        await client.query('ROLLBACK');
+        return { duplicate: true };
+      }
       for (const [dim, value] of Object.entries(signal.dimensions)) {
         if (value == null) continue;
         await client.query(
@@ -88,29 +110,47 @@ export class BaselineVault {
         );
       }
       await client.query(
-        `INSERT INTO signal_events (subject_id, source, dimensions) VALUES ($1, $2, $3)`,
-        [subjectId, signal.source, JSON.stringify(signal.dimensions)]
+        `UPDATE baselines SET reference_mean = mean, reference_pinned_at = now()
+         WHERE subject_id = $1 AND reference_mean IS NULL AND sample_count >= $2`,
+        [subjectId, pinAfterSamples]
       );
       await client.query('COMMIT');
+      return { duplicate: false };
     } catch (err) { await client.query('ROLLBACK'); throw err; }
     finally { client.release(); }
   }
 
-  async logIntervention({ subjectId, intentClass, confidence, plan, result, evaluation }) {
+  /** Durable rate-limit source: real (non-veto, non-holdout) interventions. */
+  async countRecentInterventions(subjectId) {
+    const result = await this.#pool.query(
+      `SELECT
+         count(*) FILTER (WHERE executed_at > now() - interval '1 hour') AS last_hour,
+         count(*)                                                        AS last_day
+       FROM interventions
+       WHERE subject_id = $1
+         AND executed_at > now() - interval '24 hours'
+         AND vetoed = false AND holdout = false`,
+      [subjectId]
+    );
+    const row = result.rows[0] ?? {};
+    return { lastHour: parseInt(row.last_hour ?? '0', 10), lastDay: parseInt(row.last_day ?? '0', 10) };
+  }
+
+  async logIntervention({ subjectId, intentClass, confidence, plan, result, evaluation, holdout = false, rulesetVersion = null, strategyVersion = null }) {
     await this.#ensureSubject(subjectId);
     await this.#pool.query(
-      `INSERT INTO interventions (subject_id, intent_class, confidence, plan, result, outcome, outcome_weight)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-      [subjectId, intentClass, confidence, JSON.stringify(plan), JSON.stringify(result), evaluation?.outcome, evaluation?.outcomeWeight]
+      `INSERT INTO interventions (subject_id, intent_class, confidence, plan, result, outcome, outcome_weight, holdout, ruleset_version, strategy_version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [subjectId, intentClass, confidence, JSON.stringify(plan), JSON.stringify(result), evaluation?.outcome, evaluation?.outcomeWeight, holdout, rulesetVersion, strategyVersion]
     );
   }
 
-  async logVeto({ subjectId, plan, vetoReason }) {
+  async logVeto({ subjectId, plan, vetoReason, rulesetVersion = null, strategyVersion = null }) {
     await this.#ensureSubject(subjectId);
     await this.#pool.query(
-      `INSERT INTO interventions (subject_id, intent_class, confidence, plan, vetoed, veto_reason)
-       VALUES ($1,$2,$3,$4,true,$5)`,
-      [subjectId, plan.intentClass ?? 'UNKNOWN', plan.confidence ?? 0, JSON.stringify(plan), vetoReason]
+      `INSERT INTO interventions (subject_id, intent_class, confidence, plan, vetoed, veto_reason, ruleset_version, strategy_version)
+       VALUES ($1,$2,$3,$4,true,$5,$6,$7)`,
+      [subjectId, plan.intentClass ?? 'UNKNOWN', plan.confidence ?? 0, JSON.stringify(plan), vetoReason, rulesetVersion, strategyVersion]
     );
   }
 
@@ -168,6 +208,83 @@ export class BaselineVault {
        WHERE subject_id = $1 AND active = true`,
       [subjectId]
     );
+  }
+
+  // ── Escalation tracking (human oversight) ────────────────────────────────
+
+  async recordEscalation({ escalationId, subjectId, reason, intentClass, payload, ackDeadline }) {
+    await this.#pool.query(
+      `INSERT INTO escalations (id, subject_id, reason, intent_class, payload, ack_deadline)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (id) DO NOTHING`,
+      [escalationId, subjectId, reason, intentClass ?? null, JSON.stringify(payload ?? {}), ackDeadline]
+    );
+  }
+
+  async ackEscalation(escalationId, ackedBy) {
+    const result = await this.#pool.query(
+      `UPDATE escalations SET acked_at = now(), acked_by = $2
+       WHERE id = $1 AND acked_at IS NULL`,
+      [escalationId, ackedBy]
+    );
+    return result.rowCount > 0;
+  }
+
+  async pendingEscalations() {
+    const result = await this.#pool.query(
+      `SELECT id, subject_id, reason, intent_class, created_at, ack_deadline
+       FROM escalations WHERE acked_at IS NULL
+       ORDER BY ack_deadline ASC LIMIT 100`
+    );
+    return result.rows;
+  }
+
+  async overdueEscalations() {
+    const result = await this.#pool.query(
+      `SELECT id, subject_id, reason, intent_class, created_at, ack_deadline
+       FROM escalations
+       WHERE acked_at IS NULL AND ack_deadline < now() AND overdue_alerted_at IS NULL
+       ORDER BY ack_deadline ASC LIMIT 100`
+    );
+    return result.rows;
+  }
+
+  async markEscalationAlerted(escalationId) {
+    await this.#pool.query(
+      `UPDATE escalations SET overdue_alerted_at = now() WHERE id = $1`,
+      [escalationId]
+    );
+  }
+
+  // ── Data lifecycle ───────────────────────────────────────────────────────
+
+  /** Retention sweep. Returns rows deleted per table. */
+  async pruneExpiredData({ signalRetentionDays = 30, escalationRetentionDays = 90 } = {}) {
+    const signals = await this.#pool.query(
+      `DELETE FROM signal_events WHERE recorded_at < now() - make_interval(days => $1)`,
+      [signalRetentionDays]
+    );
+    const escalations = await this.#pool.query(
+      `DELETE FROM escalations WHERE acked_at IS NOT NULL AND acked_at < now() - make_interval(days => $1)`,
+      [escalationRetentionDays]
+    );
+    return { signalEvents: signals.rowCount, escalations: escalations.rowCount };
+  }
+
+  /** Right-to-erasure: removes every trace of a subject, audit rows included. */
+  async eraseSubject(subjectId) {
+    const client = await this.#pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`DELETE FROM signal_events   WHERE subject_id = $1`, [subjectId]);
+      await client.query(`DELETE FROM baselines       WHERE subject_id = $1`, [subjectId]);
+      await client.query(`DELETE FROM interventions   WHERE subject_id = $1`, [subjectId]);
+      await client.query(`DELETE FROM consent_records WHERE subject_id = $1`, [subjectId]);
+      await client.query(`DELETE FROM escalations     WHERE subject_id = $1`, [subjectId]);
+      await client.query(`DELETE FROM subjects        WHERE subject_id = $1`, [subjectId]);
+      await client.query('COMMIT');
+    } catch (err) { await client.query('ROLLBACK'); throw err; }
+    finally { client.release(); }
   }
 
   async health() {

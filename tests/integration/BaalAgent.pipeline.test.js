@@ -45,12 +45,12 @@ class FakeMonitor {
 
 const noopHealthServer = { start: async () => {}, stop: async () => {} };
 
-const flatBaseline = (subjectId) => ({
+const DIMS = ['cognitive_load', 'emotional_valence', 'arousal_level', 'decision_velocity', 'attention_vector', 'system_mode', 'hesitation_index'];
+
+// A mature, pinned baseline: past calibration, reference matches the mean.
+const flatBaseline = (subjectId, { mean = 0.2, sampleCount = 100, referenceMean = mean } = {}) => ({
   subjectId,
-  dimensions: Object.fromEntries(
-    ['cognitive_load', 'emotional_valence', 'arousal_level', 'decision_velocity', 'attention_vector', 'system_mode', 'hesitation_index']
-      .map(d => [d, { mean: 0.2, stdDev: 0.05 }])
-  ),
+  dimensions: Object.fromEntries(DIMS.map(d => [d, { mean, stdDev: 0.05, sampleCount, referenceMean }])),
 });
 
 const fullConsent = (subjectId, { maxIntensity = Intensity.SIGNAL, modalities = [Modality.HAPTIC, Modality.AUDITORY, Modality.COGNITIVE] } = {}) => ({
@@ -169,6 +169,118 @@ describe('BaalAgent pipeline', () => {
     assert.equal(vault.interventionLog.length, 1);
     // Both signals still fed the resolution loop.
     assert.equal(monitor.forwarded.length, 2);
+    await agent.shutdown();
+  });
+
+  test('immature baseline (calibrating) observes and adapts but never intervenes', async () => {
+    const vault = new FakeVault();
+    vault.baselines.set('s1', flatBaseline('s1', { sampleCount: 3 })); // below minBaselineSamples
+    vault.consents.set('s1', fullConsent('s1'));
+    const { queue, agent } = await buildAgent({ vault });
+    await queue.handler(overloadEvent('s1')); // would be a clear overload on a mature baseline
+    assert.equal(vault.interventionLog.length, 0);
+    assert.equal(vault.baselineUpdates.length, 1);
+    await agent.shutdown();
+  });
+
+  test('out-of-order signals are dropped', async () => {
+    const vault = new FakeVault();
+    vault.baselines.set('s1', flatBaseline('s1'));
+    const { queue, agent } = await buildAgent({ vault });
+    const now = Date.now();
+    await queue.handler({ ...calmEvent('s1'), eventId: 'e1', timestamp: now });
+    await queue.handler({ ...calmEvent('s1'), eventId: 'e2', timestamp: now - 5000 });
+    assert.equal(vault.baselineUpdates.length, 1);
+    assert.equal(agent.metrics.snapshot().droppedByReason.out_of_order, 1);
+    await agent.shutdown();
+  });
+
+  test('baseline drift beyond the pinned reference freezes adaptation', async () => {
+    const vault = new FakeVault();
+    // Adaptive mean has walked from 0.2 (reference) to 0.5 — poisoned.
+    vault.baselines.set('s1', flatBaseline('s1', { mean: 0.5, referenceMean: 0.2 }));
+    const { queue, agent } = await buildAgent({ vault });
+    await queue.handler({ ...calmEvent('s1'), payload: { cognitiveLoad: 0.5, arousal: 0.5, emotionalValence: 0.5, attentionScore: 0.5, systemMode: 0.5, reactionTimeMs: 1000, hesitationMs: 1500 } });
+    assert.equal(vault.baselineUpdates.length, 0, 'adaptation must freeze while drifted');
+    assert.ok(agent.metrics.snapshot().baselineDrifts >= 1);
+    await agent.shutdown();
+  });
+
+  test('holdout cycles observe without stimulating and audit as holdout', async () => {
+    const vault = new FakeVault();
+    vault.baselines.set('s1', flatBaseline('s1'));
+    vault.consents.set('s1', fullConsent('s1'));
+    const { queue, agent } = await buildAgent({ vault, config: { holdoutPct: 100 } });
+    await queue.handler(overloadEvent('s1'));
+    assert.equal(vault.interventionLog.length, 1);
+    assert.equal(vault.interventionLog[0].holdout, true);
+    const snap = agent.metrics.snapshot();
+    assert.deepEqual(snap.interventionsByIntent, {}, 'no real intervention counted');
+    assert.equal(snap.holdout.resolved, 1);
+    await agent.shutdown();
+  });
+
+  test('operator abort stops an in-flight intervention', async () => {
+    const vault = new FakeVault();
+    vault.baselines.set('s1', flatBaseline('s1'));
+    vault.consents.set('s1', fullConsent('s1'));
+    const monitor = new FakeMonitor({ resolved: true, delayMs: 150 });
+    const { queue, agent } = await buildAgent({ vault, monitor });
+    const inFlight = queue.handler(overloadEvent('s1'));
+    await new Promise(r => setTimeout(r, 40)); // let it reach the resolution wait
+    assert.equal(agent.abortIntervention('s1', 'operator_abort'), true);
+    await inFlight;
+    assert.equal(vault.interventionLog.length, 1);
+    assert.equal(vault.interventionLog[0].evaluation.outcome, Outcome.ABORTED);
+    assert.equal(agent.metrics.snapshot().aborts, 1);
+    // Aborted cycles must not adapt the baseline.
+    assert.equal(vault.baselineUpdates.length, 0);
+    await agent.shutdown();
+  });
+
+  test('distributed lock held elsewhere skips the intervention', async () => {
+    const vault = new FakeVault();
+    vault.baselines.set('s1', flatBaseline('s1'));
+    vault.consents.set('s1', fullConsent('s1'));
+    const monitor = new FakeMonitor();
+    monitor.interventionLock = { acquire: async () => null, release: async () => {} };
+    const { queue, agent } = await buildAgent({ vault, monitor });
+    await queue.handler(overloadEvent('s1'));
+    assert.equal(vault.interventionLog.length, 0);
+    await agent.shutdown();
+  });
+
+  test('lock service failure fails closed (observe, do not stimulate)', async () => {
+    const vault = new FakeVault();
+    vault.baselines.set('s1', flatBaseline('s1'));
+    vault.consents.set('s1', fullConsent('s1'));
+    const monitor = new FakeMonitor();
+    monitor.interventionLock = { acquire: async () => { throw new Error('redis down'); }, release: async () => {} };
+    const { queue, agent } = await buildAgent({ vault, monitor });
+    await queue.handler(overloadEvent('s1'));
+    assert.equal(vault.interventionLog.length, 0);
+    assert.equal(agent.metrics.snapshot().droppedByReason.lock_unavailable, 1);
+    await agent.shutdown();
+  });
+
+  test('mid-ladder consent revocation aborts stimulation', async () => {
+    const vault = new FakeVault();
+    vault.baselines.set('s1', flatBaseline('s1'));
+    vault.consents.set('s1', fullConsent('s1'));
+    // Revoke as soon as the first consent lookup has happened: the executor
+    // re-checks before each step, so the ladder must abort at step 1.
+    let checks = 0;
+    const originalGet = vault.getConsentRecord.bind(vault);
+    vault.getConsentRecord = async (sid) => {
+      checks += 1;
+      if (checks > 1) return { ...fullConsent('s1'), active: false, optedOut: true }; // revoked after Anat's check
+      return originalGet(sid);
+    };
+    const { queue, agent } = await buildAgent({ vault });
+    await queue.handler(overloadEvent('s1'));
+    assert.equal(vault.interventionLog.length, 1);
+    assert.equal(vault.interventionLog[0].evaluation.outcome, Outcome.ABORTED);
+    assert.equal(vault.interventionLog[0].result.abortReason, 'consent_revoked_mid_ladder');
     await agent.shutdown();
   });
 

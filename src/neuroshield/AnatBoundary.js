@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { Modality, Intensity } from '../planning/CloudPlanner.js';
 import { IntentClass }         from '../inference/StormEngine.js';
 
@@ -57,7 +58,7 @@ export class AnatBoundary {
     if (planMaxIntensity > maxIntensity)
       return this.#veto(VetoReason.INTENSITY_EXCEEDS_MANDATE, { message: `Plan intensity (${planMaxIntensity}) exceeds consented max (${maxIntensity})`, plan });
 
-    const rateCheck = this.#checkRateLimits(subjectId, planMaxIntensity);
+    const rateCheck = await this.#checkRateLimits(subjectId, planMaxIntensity);
     if (!rateCheck.passed) return this.#veto(VetoReason.RATE_LIMIT_EXCEEDED, { message: rateCheck.message, plan });
 
     this.#logIntervention(subjectId, planMaxIntensity);
@@ -70,7 +71,9 @@ export class AnatBoundary {
 
   async escalate({ plan, intent, subjectId, reason }) {
     return {
-      type: 'ANAT_ESCALATION', subjectId, reason,
+      type: 'ANAT_ESCALATION',
+      escalationId: crypto.randomUUID(),
+      subjectId, reason,
       intentClass: intent.primary?.class, confidence: intent.primary?.confidence,
       plan, escalatedAt: Date.now(), requiresAck: true,
     };
@@ -115,14 +118,25 @@ export class AnatBoundary {
     return null;
   }
 
-  #checkRateLimits(subjectId, maxIntensity) {
+  /**
+   * Rate limits combine two sources: the in-memory reservation log (covers
+   * approved-but-not-yet-persisted interventions in this process) and the
+   * durable interventions table via the consent provider (survives restarts —
+   * a crash loop must not reset the daily intensity caps).
+   */
+  async #checkRateLimits(subjectId, maxIntensity) {
     const limits = AnatBoundary.RATE_LIMITS[maxIntensity] ?? AnatBoundary.RATE_LIMITS[Intensity.PROMPT];
     const now    = Date.now();
     const log    = this.#interventionLog.get(subjectId) ?? [];
-    const lastHour = log.filter(e => now - e.timestamp < 3600000);
-    const lastDay  = log.filter(e => now - e.timestamp < 86400000);
-    if (lastHour.length >= limits.perHour) return { passed: false, message: `Rate limit: ${lastHour.length}/${limits.perHour} per hour` };
-    if (lastDay.length  >= limits.perDay)  return { passed: false, message: `Rate limit: ${lastDay.length}/${limits.perDay} per day`   };
+    let lastHour = log.filter(e => now - e.timestamp < 3600000).length;
+    let lastDay  = log.filter(e => now - e.timestamp < 86400000).length;
+    if (this.#consentProvider?.countRecentInterventions) {
+      const durable = await this.#consentProvider.countRecentInterventions(subjectId);
+      lastHour = Math.max(lastHour, durable.lastHour ?? 0);
+      lastDay  = Math.max(lastDay,  durable.lastDay  ?? 0);
+    }
+    if (lastHour >= limits.perHour) return { passed: false, message: `Rate limit: ${lastHour}/${limits.perHour} per hour` };
+    if (lastDay  >= limits.perDay)  return { passed: false, message: `Rate limit: ${lastDay}/${limits.perDay} per day`   };
     return { passed: true };
   }
 

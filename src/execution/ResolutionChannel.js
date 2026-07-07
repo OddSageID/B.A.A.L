@@ -46,6 +46,9 @@ export class ResolutionPublisher {
 
   get connected() { return this.#connected; }
 
+  /** Raw (non-subscribed) client — usable for auxiliary commands like locks. */
+  get client() { return this.#client; }
+
   async disconnect() { await this.#client.disconnect(); this.#connected = false; }
 }
 

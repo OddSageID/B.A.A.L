@@ -1,11 +1,19 @@
 import { ResolutionSubscriber, ResolutionPublisher } from './ResolutionChannel.js';
+import { InterventionLock }                          from './InterventionLock.js';
 import { BaalLogger }                                from '../utils/BaalLogger.js';
 
 export class ResolutionMonitor {
   #subscriber = null;
   #publisher  = null;
+  #lock       = null;
   #logger     = new BaalLogger({ name: 'ResolutionMonitor' });
   #windows    = new Map();
+
+  /** Cross-instance per-subject intervention lock (backed by Redis). */
+  get interventionLock() {
+    this.#lock ??= new InterventionLock(this.#publisher.client);
+    return this.#lock;
+  }
 
   static async create() {
     const monitor       = new ResolutionMonitor();

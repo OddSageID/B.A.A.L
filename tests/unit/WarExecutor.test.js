@@ -82,6 +82,68 @@ describe('WarExecutor.execute', () => {
   });
 });
 
+describe('WarExecutor.execute — abort paths', () => {
+  test('a pre-aborted signal executes nothing', async () => {
+    const war = new WarExecutor();
+    war.setMonitor(monitorResolving(true));
+    const controller = new AbortController();
+    controller.abort('operator_abort');
+    const result = await war.execute(planOf([step(1, Modality.HAPTIC, Intensity.WHISPER)]), 's1', { abortSignal: controller.signal });
+    assert.equal(result.outcome, Outcome.ABORTED);
+    assert.equal(result.stepsExecuted, 0);
+    assert.equal(result.abortReason, 'operator_abort');
+  });
+
+  test('abort during a resolution window stops the ladder', async () => {
+    const war = new WarExecutor();
+    war.setMonitor({ waitForResolution: () => new Promise(r => setTimeout(() => r({ resolved: false, partiallyResolved: false, signal: null, timedOut: true }), 200)) });
+    const controller = new AbortController();
+    const running = war.execute(planOf([
+      step(1, Modality.HAPTIC, Intensity.WHISPER),
+      step(2, Modality.AUDITORY, Intensity.NUDGE, 'if_step_1_unresolved'),
+    ]), 's1', { abortSignal: controller.signal });
+    setTimeout(() => controller.abort('kill_switch'), 20);
+    const result = await running;
+    assert.equal(result.outcome, Outcome.ABORTED);
+    assert.equal(result.stepsExecuted, 1, 'step 2 must never fire after abort');
+  });
+
+  test('consent revoked mid-ladder aborts before the next stimulating step', async () => {
+    const war = new WarExecutor();
+    war.setMonitor(monitorResolving(false));
+    let calls = 0;
+    const consentCheck = async () => { calls += 1; return calls === 1; }; // consented for step 1 only
+    const result = await war.execute(planOf([
+      step(1, Modality.HAPTIC, Intensity.WHISPER),
+      step(2, Modality.AUDITORY, Intensity.NUDGE, 'if_step_1_unresolved'),
+    ]), 's1', { consentCheck });
+    assert.equal(result.outcome, Outcome.ABORTED);
+    assert.equal(result.abortReason, 'consent_revoked_mid_ladder');
+    assert.equal(result.stepsExecuted, 1);
+  });
+
+  test('a consent check error fails closed (aborts)', async () => {
+    const war = new WarExecutor();
+    war.setMonitor(monitorResolving(false));
+    const result = await war.execute(planOf([step(1, Modality.HAPTIC, Intensity.WHISPER)]), 's1', {
+      consentCheck: async () => { throw new Error('pg down'); },
+    });
+    assert.equal(result.outcome, Outcome.ABORTED);
+    assert.equal(result.stepsExecuted, 0);
+  });
+
+  test('ABORTED evaluates with zero baseline weight', () => {
+    const war = new WarExecutor();
+    const evaluation = war.evaluate({
+      intent: { primary: { class: 'X', confidence: 1 } },
+      plan: {},
+      result: { outcome: Outcome.ABORTED, stepsExecuted: 1, executionLog: [] },
+    });
+    assert.equal(evaluation.outcome, Outcome.ABORTED);
+    assert.equal(evaluation.outcomeWeight, 0);
+  });
+});
+
 describe('WarExecutor.evaluate', () => {
   const war = new WarExecutor();
   const intent = { primary: { class: 'COGNITIVE_OVERLOAD', confidence: 1 } };

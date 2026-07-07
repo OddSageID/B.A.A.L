@@ -92,16 +92,62 @@ are recorded in `schema_migrations`.
 
 ---
 
+## Security model
+
+**Producer authentication.** Every ingested event must be HMAC-SHA256 signed
+over its raw bytes by a key from `BAAL_INGEST_KEYS`; keys are optionally
+scoped to specific sources (`biometric`, `eeg`, …). Unsigned, tampered, or
+out-of-scope events are dead-lettered before they touch a subject. Auth is
+mandatory in production — the process refuses to start without keys.
+
+**Admin API.** Mutating operator routes require `Authorization: Bearer
+$BAAL_ADMIN_TOKEN` (constant-time compared). With no token configured they
+are disabled outright — never open.
+
+**Kill switches.** Consent is re-verified between every ladder step, so a
+revocation stops stimulation mid-intervention (outcome `ABORTED`, zero
+baseline adaptation). Operators can abort per subject or globally.
+
+**Baseline governance.** New subjects calibrate for
+`BAAL_MIN_BASELINE_SAMPLES` signals before any inference runs. Once
+calibrated, a reference mean is pinned per dimension; if the adaptive mean
+drifts beyond ±0.2 from its reference (slow poisoning, sensor degradation),
+adaptation freezes and a drift metric fires.
+
+Not defended: a compromised producer-key holder can forge events for its
+permitted sources; key rotation and actuator-side security are deployment
+concerns.
+
+---
+
 ## Operations
 
-### Health & metrics
+### Health, metrics & admin
 
 A localhost-only HTTP server (configurable via `BAAL_HEALTH_PORT` / `BAAL_HEALTH_HOST`):
 
 | Endpoint | Behavior |
 |---|---|
 | `GET /health` | `200` when Postgres, RabbitMQ, and Redis are all reachable; `503 degraded` otherwise |
-| `GET /metrics` | JSON counters: interventions by intent class, vetoes by reason, resolution outcomes |
+| `GET /metrics` | Counters: interventions, vetoes, drops, aborts, drift, holdout vs treated resolution rates |
+| `GET /escalations` | Pending human-oversight escalations |
+| `POST /escalations/{id}/ack` | Acknowledge an escalation *(token)* |
+| `POST /abort/{subjectId}` | Kill an in-flight intervention *(token)* |
+| `DELETE /subjects/{subjectId}` | Right-to-erasure: aborts, then removes every trace *(token)* |
+
+### Human oversight loop
+
+Vetoes and mandated notifications publish to `baal.escalation`; the
+**EscalationDesk** consumes them, records each with an acknowledgment
+deadline (15 min default), and pages via the `onOverdue` hook when a deadline
+lapses. `requiresAck` is now enforced, not decorative.
+
+### Outcome attribution
+
+With `BAAL_HOLDOUT_PCT` set, a deterministic slice of would-be interventions
+silently observes instead of acting, measuring the natural resolution rate.
+`/metrics` reports `efficacy.treatedRate` vs `efficacy.naturalRate`. High-risk
+intents (panic, rage, suppression) are never held out.
 
 ### Consent lifecycle
 
@@ -120,11 +166,19 @@ per-modality grants, and the intensity ceiling.
 
 | Failure | Behavior |
 |---|---|
+| Unsigned / tampered / unauthorized event | Dead-lettered before processing |
 | Malformed / stale / future-dated event | Dead-lettered to `baal.dlq`, never processed |
+| Duplicate event (redelivery) | Deduped in memory and durably by `eventId` — commits nothing twice |
+| Out-of-order signal for a subject | Dropped — never rewinds baseline or resolution state |
 | Handler error (e.g. DB blip) | Redelivered once, then dead-lettered — no poison loops |
-| Concurrent signals for one subject | Perception always runs; only one intervention in flight per subject, later signals feed the open resolution window |
+| Concurrent signals for one subject | Perception always runs; only one intervention in flight per subject (Redis lock across replicas), later signals feed the open resolution window |
+| Redis lock service unreachable | Observe only, no stimulation (fail closed) |
+| Consent revoked mid-ladder | Intervention aborts before the next stimulating step |
+| Baseline drift beyond pinned reference | Adaptation frozen, drift metric raised |
+| Rate limits after a crash/restart | Enforced from the durable interventions table, not process memory |
 | Audit write failure | Logged, never breaks the intervention loop |
 | Escalation channel down | Logged, veto still enforced |
+| Escalation unacknowledged past deadline | ERROR log + metric + `onOverdue` paging hook |
 
 ### Testing
 
