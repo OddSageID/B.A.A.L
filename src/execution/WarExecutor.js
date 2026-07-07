@@ -44,7 +44,12 @@ export class WarExecutor {
         deliveryResult = await deliveryHandler(step, subjectId);
       } catch (err) {
         this.#logger.error('Delivery failure', { step, subjectId, err });
-        executionLog.push({ step: step.step, status: 'delivery_failed', error: err.message });
+        // A failed caregiver notification means the human-oversight guarantee
+        // did NOT happen — surface it rather than silently continuing.
+        executionLog.push({
+          step: step.step, status: 'delivery_failed', error: err.message,
+          escalationFailed: step.modality === Modality.NOTIFICATION || undefined,
+        });
         continue;
       }
       executionLog.push({ step: step.step, modality: step.modality, intensity: step.intensity, cue: step.cue, delivered: deliveryResult.delivered, firedAt: Date.now() });

@@ -63,22 +63,29 @@ export class ResolutionSubscriber {
   }
 
   async waitForSignal(subjectId, windowMs) {
-    return new Promise(async (resolve) => {
-      const channel = channelFor(subjectId);
-      let settled = false, timeoutId = null;
-      const cleanup = async (result) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timeoutId);
-        try { await this.#client.unsubscribe(channel); } catch (_) {}
-        resolve(result);
-      };
-      timeoutId = setTimeout(() => cleanup(null), windowMs);
-      await this.#client.subscribe(channel, async (message) => {
-        try { await cleanup(ResolutionSignal.deserialize(message)); }
+    const channel = channelFor(subjectId);
+    let settled = false, timeoutId = null, resolvePromise;
+    const result = new Promise((resolve) => { resolvePromise = resolve; });
+    const cleanup = async (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      try { await this.#client.unsubscribe(channel); }
+      catch (err) { console.error('[ResolutionSubscriber] Unsubscribe failed', err); }
+      resolvePromise(value);
+    };
+    timeoutId = setTimeout(() => cleanup(null), windowMs);
+    try {
+      await this.#client.subscribe(channel, (message) => {
+        try { cleanup(ResolutionSignal.deserialize(message)); }
         catch (err) { console.error('[ResolutionSubscriber] Malformed signal', err); }
       });
-    });
+    } catch (err) {
+      // Subscription failed — resolve as timeout rather than hanging the executor.
+      console.error('[ResolutionSubscriber] Subscribe failed', err);
+      await cleanup(null);
+    }
+    return result;
   }
 
   get connected() { return this.#connected; }

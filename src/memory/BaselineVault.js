@@ -9,7 +9,7 @@ export class BaselineVault {
     const vault = new BaselineVault();
     vault.#pool = new Pool({
       host:     process.env.PGHOST     ?? 'localhost',
-      port:     process.env.PGPORT     ?? 5432,
+      port:     parseInt(process.env.PGPORT ?? '5432', 10),
       database: process.env.PGDATABASE ?? 'baal',
       user:     process.env.PGUSER     ?? 'baal',
       password: process.env.PGPASSWORD,
@@ -24,7 +24,6 @@ export class BaselineVault {
     vault.#pool = pool;
     return vault;
   }
-
 
   async #migrate() {
     await MigrationRunner.run(this.#pool);
@@ -42,7 +41,6 @@ export class BaselineVault {
     }
     return { subjectId, dimensions };
   }
-
 
   async getConsentRecord(subjectId) {
     const result = await this.#pool.query(
@@ -70,6 +68,12 @@ export class BaselineVault {
     const client = await this.#pool.connect();
     try {
       await client.query('BEGIN');
+      // A subject's first signal must not violate the FK — enroll on sight.
+      // Enrollment creates the subject row only; consent stays absent (fail closed).
+      await client.query(
+        `INSERT INTO subjects (subject_id) VALUES ($1) ON CONFLICT (subject_id) DO NOTHING`,
+        [subjectId]
+      );
       for (const [dim, value] of Object.entries(signal.dimensions)) {
         if (value == null) continue;
         await client.query(
@@ -93,6 +97,7 @@ export class BaselineVault {
   }
 
   async logIntervention({ subjectId, intentClass, confidence, plan, result, evaluation }) {
+    await this.#ensureSubject(subjectId);
     await this.#pool.query(
       `INSERT INTO interventions (subject_id, intent_class, confidence, plan, result, outcome, outcome_weight)
        VALUES ($1,$2,$3,$4,$5,$6,$7)`,
@@ -101,10 +106,18 @@ export class BaselineVault {
   }
 
   async logVeto({ subjectId, plan, vetoReason }) {
+    await this.#ensureSubject(subjectId);
     await this.#pool.query(
       `INSERT INTO interventions (subject_id, intent_class, confidence, plan, vetoed, veto_reason)
        VALUES ($1,$2,$3,$4,true,$5)`,
-      [subjectId, plan.intentClass, plan.confidence, JSON.stringify(plan), vetoReason]
+      [subjectId, plan.intentClass ?? 'UNKNOWN', plan.confidence ?? 0, JSON.stringify(plan), vetoReason]
+    );
+  }
+
+  async #ensureSubject(subjectId) {
+    await this.#pool.query(
+      `INSERT INTO subjects (subject_id) VALUES ($1) ON CONFLICT (subject_id) DO NOTHING`,
+      [subjectId]
     );
   }
 
@@ -126,12 +139,14 @@ export class BaselineVault {
     finally { client.release(); }
   }
 
-
-
   async activateConsent(subjectId, modalities = [], maxIntensity = 3) {
     const client = await this.#pool.connect();
     try {
       await client.query('BEGIN');
+      await client.query(
+        `INSERT INTO subjects (subject_id) VALUES ($1) ON CONFLICT (subject_id) DO NOTHING`,
+        [subjectId]
+      );
       await client.query(
         `UPDATE consent_records SET active = false WHERE subject_id = $1 AND active = true`,
         [subjectId]

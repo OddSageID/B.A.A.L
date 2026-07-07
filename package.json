@@ -1,23 +1,22 @@
 {
   "name": "baal",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Behavioral Anticipatory Autonomy Layer — agentic cognitive protection daemon",
   "type": "module",
   "main": "index.js",
+  "license": "MIT",
   "scripts": {
     "start": "node index.js",
-    "dev":   "node --watch index.js",
-    "test":  "node --experimental-vm-modules node_modules/.bin/jest"
+    "dev": "node --watch index.js",
+    "test": "node --test tests/",
+    "check": "find src index.js -name '*.js' -exec node --check {} +"
   },
   "dependencies": {
     "amqplib": "^0.10.3",
-    "pg":      "^8.11.3",
-    "redis":   "^4.6.13"
-  },
-  "devDependencies": {
-    "jest": "^29.7.0"
+    "pg": "^8.11.3",
+    "redis": "^4.6.13"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   }
 }

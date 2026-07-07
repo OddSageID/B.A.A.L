@@ -1,8 +1,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const DEFAULT_MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
 
 export class MigrationRunner {
-  static async run(pool, { migrationsDir = path.resolve(process.cwd(), 'db/migrations') } = {}) {
+  static async run(pool, { migrationsDir = DEFAULT_MIGRATIONS_DIR } = {}) {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS schema_migrations (
         id BIGSERIAL PRIMARY KEY,
