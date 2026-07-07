@@ -100,12 +100,14 @@ export class BaselineVault {
       }
       for (const [dim, value] of Object.entries(signal.dimensions)) {
         if (value == null) continue;
+        // $4 must be cast: bare (1 - $4) makes Postgres infer INTEGER for the
+        // parameter and reject fractional weights (22P02). Caught by the live suite.
         await client.query(
           `INSERT INTO baselines (subject_id, dimension, mean, std_dev, sample_count)
-           VALUES ($1, $2, $3, 0.1, 1)
+           VALUES ($1, $2, $3::numeric, 0.1, 1)
            ON CONFLICT (subject_id, dimension) DO UPDATE SET
-             mean         = baselines.mean * (1 - $4) + $3 * $4,
-             std_dev      = GREATEST(SQRT(baselines.std_dev^2 * (1 - $4) + ($3 - baselines.mean)^2 * $4), 0.01),
+             mean         = baselines.mean * (1 - $4::numeric) + $3::numeric * $4::numeric,
+             std_dev      = GREATEST(SQRT(baselines.std_dev^2 * (1 - $4::numeric) + ($3::numeric - baselines.mean)^2 * $4::numeric), 0.01),
              sample_count = baselines.sample_count + 1,
              last_updated = now()`,
           [subjectId, dim, value, weight]
