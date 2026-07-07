@@ -35,6 +35,35 @@ export class BaalMetrics {
   markOverdueEscalation() { this.#overdueEscalations += 1; }
   markBaselineDrift() { this.#baselineDrifts += 1; }
 
+  /** Prometheus exposition format for scrape-based monitoring. */
+  toPrometheus() {
+    const snap = this.snapshot();
+    const esc = (v) => String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+    const lines = [];
+    const counter = (name, help, entries) => {
+      lines.push(`# HELP ${name} ${help}`, `# TYPE ${name} counter`);
+      for (const [labels, value] of entries) lines.push(`${name}${labels} ${value}`);
+    };
+    counter('baal_interventions_total', 'Interventions executed by intent class',
+      Object.entries(snap.interventionsByIntent).map(([k, v]) => [`{intent_class="${esc(k)}"}`, v]));
+    counter('baal_vetoes_total', 'Anat vetoes by reason',
+      Object.entries(snap.vetoByReason).map(([k, v]) => [`{reason="${esc(k)}"}`, v]));
+    counter('baal_dropped_events_total', 'Events dropped before intervention by reason',
+      Object.entries(snap.droppedByReason).map(([k, v]) => [`{reason="${esc(k)}"}`, v]));
+    counter('baal_resolutions_total', 'Treated intervention outcomes', [
+      ['{outcome="resolved"}', snap.resolution.resolved],
+      ['{outcome="unresolved"}', snap.resolution.unresolved],
+    ]);
+    counter('baal_holdout_total', 'Holdout (observe-only) outcomes', [
+      ['{outcome="resolved"}', snap.holdout.resolved],
+      ['{outcome="unresolved"}', snap.holdout.unresolved],
+    ]);
+    counter('baal_aborts_total', 'Interventions aborted mid-ladder', [['', snap.aborts]]);
+    counter('baal_overdue_escalations_total', 'Escalations past their ack deadline', [['', snap.overdueEscalations]]);
+    counter('baal_baseline_drift_total', 'Baseline drift detections (adaptation frozen)', [['', snap.baselineDrifts]]);
+    return lines.join('\n') + '\n';
+  }
+
   snapshot() {
     const rate = ({ resolved, unresolved }) => {
       const total = resolved + unresolved;

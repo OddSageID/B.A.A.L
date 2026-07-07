@@ -11,11 +11,14 @@ const MAX_BODY_BYTES = 10 * 1024;
  *
  * Routes:
  *   GET    /health                  liveness (503 when a dependency is down)
- *   GET    /metrics                 counters snapshot
+ *   GET    /metrics                 counters (JSON; ?format=prometheus for exposition text)
  *   GET    /escalations             pending human-oversight escalations
- *   POST   /escalations/{id}/ack    acknowledge an escalation   [token]
- *   POST   /abort/{subjectId}       kill an in-flight intervention [token]
- *   DELETE /subjects/{subjectId}    right-to-erasure               [token]
+ *   POST   /escalations/{id}/ack    acknowledge an escalation        [token]
+ *   POST   /abort/{subjectId}       kill an in-flight intervention   [token]
+ *   GET    /subjects/{id}/consent   current consent record           [token]
+ *   PUT    /subjects/{id}/consent   grant consent {modalities, maxIntensity} [token]
+ *   DELETE /subjects/{id}/consent   revoke consent (opt out)         [token]
+ *   DELETE /subjects/{subjectId}    right-to-erasure                 [token]
  */
 export class HealthServer {
   #server = null;
@@ -54,7 +57,15 @@ export class HealthServer {
     const parts = url.pathname.split('/').filter(Boolean);
 
     if (req.method === 'GET' && url.pathname === '/health')  return this.#health(res);
-    if (req.method === 'GET' && url.pathname === '/metrics') return this.#json(res, 200, this.#deps.metrics.snapshot());
+    if (req.method === 'GET' && url.pathname === '/metrics') {
+      const wantsProm = url.searchParams.get('format') === 'prometheus'
+        || (req.headers.accept ?? '').includes('text/plain');
+      if (wantsProm && typeof this.#deps.metrics.toPrometheus === 'function') {
+        res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' });
+        return res.end(this.#deps.metrics.toPrometheus());
+      }
+      return this.#json(res, 200, this.#deps.metrics.snapshot());
+    }
 
     if (req.method === 'GET' && url.pathname === '/escalations') {
       if (!this.#deps.escalations) return this.#json(res, 404, { error: 'not_available' });
@@ -74,6 +85,26 @@ export class HealthServer {
       if (!this.#deps.abort) return this.#json(res, 404, { error: 'not_available' });
       const aborted = await this.#deps.abort(decodeURIComponent(parts[1]));
       return this.#json(res, 200, { aborted });
+    }
+
+    if (parts[0] === 'subjects' && parts.length === 3 && parts[2] === 'consent') {
+      if (!this.#authorize(req, res)) return;
+      if (!this.#deps.consent) return this.#json(res, 404, { error: 'not_available' });
+      const subjectId = decodeURIComponent(parts[1]);
+      if (req.method === 'GET') {
+        const record = await this.#deps.consent.get(subjectId);
+        return record ? this.#json(res, 200, record) : this.#json(res, 404, { error: 'no_consent_record' });
+      }
+      if (req.method === 'PUT') {
+        const body = await this.#readJson(req);
+        const result = await this.#deps.consent.grant(subjectId, body ?? {});
+        return result.ok ? this.#json(res, 200, { granted: true }) : this.#json(res, 400, { error: result.error });
+      }
+      if (req.method === 'DELETE') {
+        await this.#deps.consent.revoke(subjectId);
+        return this.#json(res, 200, { revoked: true });
+      }
+      return this.#json(res, 405, { error: 'method_not_allowed' });
     }
 
     if (req.method === 'DELETE' && parts[0] === 'subjects' && parts.length === 2) {

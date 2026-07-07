@@ -25,4 +25,19 @@ describe('BaalMetrics', () => {
     snap.resolution.resolved = 999;
     assert.equal(metrics.snapshot().resolution.resolved, 0);
   });
+
+  test('Prometheus exposition renders counters with escaped labels', () => {
+    const metrics = new BaalMetrics();
+    metrics.markIntervention('PANIC_ONSET');
+    metrics.markVeto('bad"reason\\with\nnasty chars');
+    metrics.markResolution('RESOLVED');
+    metrics.markAbort();
+    const text = metrics.toPrometheus();
+    assert.match(text, /# TYPE baal_interventions_total counter/);
+    assert.match(text, /baal_interventions_total\{intent_class="PANIC_ONSET"\} 1/);
+    assert.match(text, /baal_vetoes_total\{reason="bad\\"reason\\\\with\\nnasty chars"\} 1/);
+    assert.match(text, /baal_resolutions_total\{outcome="resolved"\} 1/);
+    assert.match(text, /baal_aborts_total 1/);
+    assert.ok(text.endsWith('\n'));
+  });
 });

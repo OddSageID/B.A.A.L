@@ -129,6 +129,7 @@ await producer.close();
 ```bash
 node bin/baalctl.js enroll subject-42
 node bin/baalctl.js consent grant subject-42 --modalities haptic,auditory --max-intensity 3
+# add --api to manage consent through the daemon's admin API (no PG credentials needed)
 node bin/baalctl.js baseline subject-42        # watch calibration progress
 node bin/baalctl.js status                     # daemon + dependency health
 node bin/baalctl.js escalations                # pending human-oversight items
@@ -190,10 +191,11 @@ A localhost-only HTTP server (configurable via `BAAL_HEALTH_PORT` / `BAAL_HEALTH
 | Endpoint | Behavior |
 |---|---|
 | `GET /health` | `200` when Postgres, RabbitMQ, and Redis are all reachable; `503 degraded` otherwise |
-| `GET /metrics` | Counters: interventions, vetoes, drops, aborts, drift, holdout vs treated resolution rates |
+| `GET /metrics` | Counters (JSON); `?format=prometheus` for Prometheus exposition text |
 | `GET /escalations` | Pending human-oversight escalations |
 | `POST /escalations/{id}/ack` | Acknowledge an escalation *(token)* |
 | `POST /abort/{subjectId}` | Kill an in-flight intervention *(token)* |
+| `GET/PUT/DELETE /subjects/{id}/consent` | Show / grant / revoke consent remotely — grant validates modalities and caps intensity at PROMPT *(token)* |
 | `DELETE /subjects/{subjectId}` | Right-to-erasure: aborts, then removes every trace *(token)* |
 
 ### Human oversight loop

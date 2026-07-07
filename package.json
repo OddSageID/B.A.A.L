@@ -1,6 +1,6 @@
 {
   "name": "baal",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Behavioral Anticipatory Autonomy Layer — agentic cognitive protection daemon",
   "type": "module",
   "main": "index.js",

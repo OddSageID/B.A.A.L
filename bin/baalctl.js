@@ -31,6 +31,7 @@ const { values: flags, positionals } = parseArgs({
     modalities:      { type: 'string' },
     'max-intensity': { type: 'string' },
     actor:           { type: 'string' },
+    api:             { type: 'boolean', default: false },
     yes:             { type: 'boolean', default: false },
     help:            { type: 'boolean', short: 'h', default: false },
   },
@@ -39,9 +40,10 @@ const { values: flags, positionals } = parseArgs({
 const usage = () => {
   console.log(`Usage:
   baalctl enroll <subjectId>
-  baalctl consent grant <subjectId> --modalities haptic,auditory [--max-intensity 1..4]
-  baalctl consent revoke <subjectId>
-  baalctl consent show <subjectId>
+  baalctl consent grant <subjectId> --modalities haptic,auditory [--max-intensity 1..4] [--api]
+  baalctl consent revoke <subjectId> [--api]
+  baalctl consent show <subjectId> [--api]
+      --api uses the daemon's admin API (BAAL_ADMIN_TOKEN) instead of Postgres
   baalctl baseline <subjectId>
   baalctl status | metrics | escalations
   baalctl escalations ack <id> --actor <who>
@@ -112,6 +114,12 @@ async function main() {
         if (unknown.length) fail(`unknown modalities: ${unknown.join(', ')} (valid: ${MODALITIES.join(', ')})`);
         const maxIntensity = parseInt(flags['max-intensity'] ?? '3', 10);
         if (!(maxIntensity >= 1 && maxIntensity <= 4)) fail('--max-intensity must be 1–4 (OVERRIDE=5 is never grantable)');
+        if (flags.api) {
+          const { status, payload } = await api('PUT', `/subjects/${encodeURIComponent(subjectId)}/consent`, { modalities, maxIntensity });
+          if (status !== 200) fail(payload.error ?? `HTTP ${status}`);
+          console.log(`Consent active for ${subjectId}: ${modalities.join(', ')} up to ${INTENSITY_NAMES[maxIntensity]} (via admin API).`);
+          return;
+        }
         await withVault(async (vault) => {
           await vault.activateConsent(subjectId, modalities, maxIntensity);
           console.log(`Consent active for ${subjectId}: ${modalities.join(', ')} up to ${INTENSITY_NAMES[maxIntensity]}.`);
@@ -119,6 +127,12 @@ async function main() {
         return;
       }
       if (action === 'revoke') {
+        if (flags.api) {
+          const { status, payload } = await api('DELETE', `/subjects/${encodeURIComponent(subjectId)}/consent`);
+          if (status !== 200) fail(payload.error ?? `HTTP ${status}`);
+          console.log(`Consent revoked for ${subjectId}; any in-flight intervention was aborted (via admin API).`);
+          return;
+        }
         await withVault(async (vault) => {
           await vault.revokeConsent(subjectId);
           console.log(`Consent revoked for ${subjectId}. In-flight interventions abort at the next ladder step.`);
@@ -126,6 +140,13 @@ async function main() {
         return;
       }
       if (action === 'show') {
+        if (flags.api) {
+          const { status, payload } = await api('GET', `/subjects/${encodeURIComponent(subjectId)}/consent`);
+          if (status === 404) return console.log(`No consent record for ${subjectId}.`);
+          if (status !== 200) fail(payload.error ?? `HTTP ${status}`);
+          console.log(JSON.stringify(payload, null, 2));
+          return;
+        }
         await withVault(async (vault) => {
           const record = await vault.getConsentRecord(subjectId);
           if (!record) return console.log(`No consent record for ${subjectId}.`);

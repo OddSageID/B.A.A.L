@@ -104,6 +104,26 @@ export class BaalAgent {
         escalations: this.#desk ? { list: () => this.#desk.pending(), ack: (id, actor) => this.#desk.ack(id, actor) } : null,
         abort: (subjectId) => this.abortIntervention(subjectId, 'operator_abort'),
         eraseSubject: (subjectId) => this.eraseSubject(subjectId),
+        consent: typeof this.#vault.activateConsent === 'function' ? {
+          get: (subjectId) => this.#vault.getConsentRecord(subjectId),
+          grant: async (subjectId, { modalities, maxIntensity } = {}) => {
+            if (!Array.isArray(modalities) || modalities.length === 0) return { ok: false, error: 'modalities must be a non-empty array' };
+            const valid = new Set(Object.values(Modality));
+            const unknown = modalities.filter(m => !valid.has(m));
+            if (unknown.length) return { ok: false, error: `unknown modalities: ${unknown.join(', ')}` };
+            const intensity = Number(maxIntensity ?? 3);
+            // OVERRIDE (5) is never grantable — not even by an operator with the token.
+            if (!Number.isInteger(intensity) || intensity < 1 || intensity > 4) return { ok: false, error: 'maxIntensity must be an integer 1–4' };
+            await this.#vault.activateConsent(subjectId, modalities, intensity);
+            this.#logger.anat('Consent granted via admin API', { subjectId, modalities, maxIntensity: intensity });
+            return { ok: true };
+          },
+          revoke: async (subjectId) => {
+            await this.#vault.revokeConsent(subjectId);
+            this.abortIntervention(subjectId, 'consent_revoked');
+            this.#logger.anat('Consent revoked via admin API', { subjectId });
+          },
+        } : null,
       },
       port: this.config.healthPort,
       host: this.config.healthHost,

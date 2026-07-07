@@ -68,10 +68,10 @@ bugs invisible to in-memory fakes, all fixed and now regression-guarded:
 3. Bare `(1 - $4)` made Postgres infer INTEGER for the weight parameter —
    22P02 on every fractional baseline weight, i.e. all of them.
 
-What remains manual in this phase: the two-instance lock-contention check
-(the CI test proves contention semantics on one host; running two daemon
-processes against one broker is a 5-minute manual check with
-`docker compose --profile full up --scale baal=2`).
+The two-instance lock-contention check is automated too: the live suite runs
+two full BaalAgent instances against shared Redis and asserts exactly one
+intervention executes (`tests/live/contention.live.test.js`). Nothing in
+Phase 1 remains manual except the Docker smoke test from Phase 0.
 
 ## Phase 2 — One real signal in, one real action out (weeks 2–4)
 
@@ -121,8 +121,9 @@ do; the audit trail depends on it).
    enough to publish.
 4. **No dashboard.** `baalctl` + `/metrics` JSON is the operator surface.
    Build a UI only when a real operator exists.
-5. **No distributed tracing / Prometheus format.** Add when there's more than
-   one service to trace.
+5. **No distributed tracing.** `/metrics?format=prometheus` provides
+   scrape-ready counters; tracing can wait until there's more than one
+   service to trace.
 6. **A compromised producer key can forge events** for its permitted sources.
    Rotation and producer-side security are yours.
 

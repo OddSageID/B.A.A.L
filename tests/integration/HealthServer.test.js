@@ -111,6 +111,59 @@ describe('HealthServer — admin routes', () => {
     } finally { await server.stop(); }
   });
 
+  test('/metrics?format=prometheus returns exposition text', async () => {
+    const metrics = new BaalMetrics();
+    metrics.markIntervention('PANIC_ONSET');
+    const server = new HealthServer({ deps: depsWith(metrics), port: 0 });
+    await server.start();
+    try {
+      const raw = await new Promise((resolve, reject) => {
+        http.get({ host: '127.0.0.1', port: server.port, path: '/metrics?format=prometheus' }, (res) => {
+          let body = '';
+          res.on('data', (d) => { body += d; });
+          res.on('end', () => resolve({ status: res.statusCode, type: res.headers['content-type'], body }));
+        }).on('error', reject);
+      });
+      assert.equal(raw.status, 200);
+      assert.match(raw.type, /text\/plain/);
+      assert.match(raw.body, /baal_interventions_total\{intent_class="PANIC_ONSET"\} 1/);
+    } finally { await server.stop(); }
+  });
+
+  test('consent routes: grant validates, revoke and get round-trip', async () => {
+    const store = new Map();
+    const server = new HealthServer({
+      deps: depsWith(new BaalMetrics(), {
+        consent: {
+          get: async (sid) => store.get(sid) ?? null,
+          grant: async (sid, { modalities, maxIntensity }) => {
+            if (!Array.isArray(modalities) || modalities.length === 0) return { ok: false, error: 'modalities must be a non-empty array' };
+            store.set(sid, { subjectId: sid, active: true, consentedModalities: modalities, maxPermittedIntensity: maxIntensity });
+            return { ok: true };
+          },
+          revoke: async (sid) => { const r = store.get(sid); if (r) { r.active = false; r.optedOut = true; } },
+        },
+      }),
+      port: 0, adminToken: TOKEN,
+    });
+    await server.start();
+    try {
+      const noToken = await request('PUT', '/subjects/s1/consent', server.port, { body: { modalities: ['haptic'] } });
+      assert.equal(noToken.status, 401, 'consent routes require the token');
+      const bad = await request('PUT', '/subjects/s1/consent', server.port, { token: TOKEN, body: { modalities: [] } });
+      assert.equal(bad.status, 400);
+      const ok = await request('PUT', '/subjects/s1/consent', server.port, { token: TOKEN, body: { modalities: ['haptic'], maxIntensity: 2 } });
+      assert.equal(ok.status, 200);
+      const got = await request('GET', '/subjects/s1/consent', server.port, { token: TOKEN });
+      assert.equal(got.body.active, true);
+      const revoked = await request('DELETE', '/subjects/s1/consent', server.port, { token: TOKEN });
+      assert.deepEqual(revoked, { status: 200, body: { revoked: true } });
+      assert.equal((await request('GET', '/subjects/s1/consent', server.port, { token: TOKEN })).body.optedOut, true);
+      const missing = await request('GET', '/subjects/unknown/consent', server.port, { token: TOKEN });
+      assert.equal(missing.status, 404);
+    } finally { await server.stop(); }
+  });
+
   test('erasure route delegates to the eraseSubject hook', async () => {
     const erased = [];
     const server = new HealthServer({
