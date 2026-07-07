@@ -1,8 +1,8 @@
 # B.A.A.L. — Handoff & Next Steps
 
-State at handoff: **v0.4.0**, branch `claude/scaffold-baal-project-WXDLE`, PR #2 open.
-129 tests passing on Node 22/24 (`npm test`), zero runtime-dependency vulnerabilities,
-end-to-end demo runs without infrastructure (`npm run demo`).
+State at handoff: **v0.5.0**, branch `claude/scaffold-baal-project-WXDLE`, PR #2 open, CI fully green.
+122 in-memory tests + 12 live-broker tests on Node 22/24, zero runtime-dependency
+vulnerabilities, end-to-end demo runs without infrastructure (`npm run demo`).
 
 The guiding principle of everything below: **sequence by risk**. Prove the
 riskiest untested assumption at each phase before building on top of it.
