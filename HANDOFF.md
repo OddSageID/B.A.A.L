@@ -1,7 +1,7 @@
 # B.A.A.L. — Handoff & Next Steps
 
 State at handoff: **v0.4.0**, branch `claude/scaffold-baal-project-WXDLE`, PR #2 open.
-119 tests passing on Node 20/22 (`npm test`), zero runtime-dependency vulnerabilities,
+129 tests passing on Node 22/24 (`npm test`), zero runtime-dependency vulnerabilities,
 end-to-end demo runs without infrastructure (`npm run demo`).
 
 The guiding principle of everything below: **sequence by risk**. Prove the

@@ -20,7 +20,7 @@ The codebase is coherent, structured, and runnable, with reasonable defaults and
 - Session/history-aware behavior via `AgentMemory`.
 
 ### Gaps addressed since initial evaluation
-- Automated tests: 69 unit/integration tests on `node:test` (jest dependency removed); CI runs on Node 20/22.
+- Automated tests: 69 unit/integration tests on `node:test` (jest dependency removed); CI runs on Node 22/24.
 - Observability: `/health` (503 on degraded dependencies) and `/metrics` endpoints, phase-tagged structured logging.
 - Failure-class handling: poison-message DLQ policy, per-subject intervention concurrency guard, durable veto/intervention audit trail.
 - Consent lifecycle ops: activation/revocation APIs, fail-closed enforcement of expiry, per-modality grants, intensity ceilings, and rate limits; subjects auto-enroll without consent.
