@@ -12,6 +12,9 @@ export const TOPOLOGY = Object.freeze({
     BIOMETRIC:   { name: 'baal.biometric',   routingKey: 'event.biometric.*'   },
     INTERACTION: { name: 'baal.interaction', routingKey: 'event.interaction.*' },
     ESCALATION:  { name: 'baal.escalation',  routingKey: 'escalation.*'        },
-    DLQ:         { name: 'baal.dlq',         routingKey: 'dlq.*'               },
+    // '#' not '*': dead-letter routing keys are multi-word (dlq.baal.behavioral)
+    // and topic '*' matches exactly one word — with '*' every dead-lettered
+    // message is silently dropped by the exchange. Caught by the live suite.
+    DLQ:         { name: 'baal.dlq',         routingKey: 'dlq.#'               },
   }),
 });

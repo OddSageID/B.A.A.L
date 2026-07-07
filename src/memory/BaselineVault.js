@@ -86,10 +86,12 @@ export class BaselineVault {
         `INSERT INTO subjects (subject_id) VALUES ($1) ON CONFLICT (subject_id) DO NOTHING`,
         [subjectId]
       );
+      // The WHERE predicate must match the partial unique index exactly, or
+      // Postgres rejects the ON CONFLICT target (42P10). Caught by the live suite.
       const eventInsert = await client.query(
         `INSERT INTO signal_events (subject_id, source, dimensions, event_id)
          VALUES ($1, $2, $3, $4)
-         ON CONFLICT (event_id) DO NOTHING`,
+         ON CONFLICT (event_id) WHERE event_id IS NOT NULL DO NOTHING`,
         [subjectId, signal.source, JSON.stringify(signal.dimensions), eventId]
       );
       if (eventId != null && eventInsert.rowCount === 0) {
