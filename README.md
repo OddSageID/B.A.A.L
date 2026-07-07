@@ -77,18 +77,79 @@ B.A.A.L. carries this arc deliberately:
 | RabbitMQ | Event ingestion (EEG, behavioral, biometric, interaction) |
 | Redis | Ephemeral resolution pub/sub — closed-loop feedback |
 
-### Quick Start
+### Try it in 60 seconds — no infrastructure
 
 ```bash
-docker compose up -d --wait   # PostgreSQL, RabbitMQ, Redis (with healthchecks)
 npm install
-cp .env.example .env
-npm test                      # 69 tests, no infrastructure required
+npm run demo
+```
+
+The demo runs the real pipeline against in-memory services and walks one
+synthetic subject through the entire lifecycle: calibration → consent →
+a whisper-level overload intervention → a panic ladder escalating to a
+caregiver alert → consent revocation → veto → escalation-desk acknowledgment.
+
+### Run the full stack
+
+```bash
+docker compose up -d --wait                 # infrastructure only
+cp .env.example .env                        # then set BAAL_INGEST_KEYS etc.
 npm start
+
+# — or everything in containers —
+export BAAL_INGEST_KEYS='{"my-producer":{"secret":"change-me-32-chars-minimum"}}'
+export BAAL_ADMIN_TOKEN='change-me-admin-token'
+docker compose --profile full up --build
 ```
 
 Schema migrations in `db/migrations/*.sql` run automatically at startup and
 are recorded in `schema_migrations`.
+
+### Send signals — producer SDK
+
+```js
+import { BaalProducer } from './src/client/BaalProducer.js';
+
+const producer = await BaalProducer.connect({
+  url: 'amqp://localhost',
+  keyId: 'my-producer',                    // must match a BAAL_INGEST_KEYS entry
+  secret: process.env.MY_PRODUCER_SECRET,  // signing is handled for you
+});
+await producer.emit({
+  subjectId: 'subject-42',
+  source: 'biometric',                     // behavioral | eeg | biometric | interaction
+  type: 'heart_rate',
+  payload: { heartRate: 96, arousal: 0.7 },
+});
+await producer.close();
+```
+
+### Manage subjects and consent — baalctl
+
+```bash
+node bin/baalctl.js enroll subject-42
+node bin/baalctl.js consent grant subject-42 --modalities haptic,auditory --max-intensity 3
+node bin/baalctl.js baseline subject-42        # watch calibration progress
+node bin/baalctl.js status                     # daemon + dependency health
+node bin/baalctl.js escalations                # pending human-oversight items
+node bin/baalctl.js escalations ack <id> --actor you@example.com
+node bin/baalctl.js abort subject-42           # kill an in-flight intervention
+node bin/baalctl.js consent revoke subject-42
+node bin/baalctl.js erase subject-42 --yes     # right-to-erasure
+```
+
+Subject lifecycle: a subject's first signal auto-enrolls them **without
+consent** — the daemon observes and calibrates (`BAAL_MIN_BASELINE_SAMPLES`
+signals) but vetoes every intervention (`CONSENT_NOT_ESTABLISHED`) until
+consent is granted. This is intentional and fail-closed.
+
+### Real notifications
+
+Set `BAAL_NOTIFY_WEBHOOK_URL` to any JSON webhook (Slack, ntfy.sh, …) and
+caregiver alerts / notification steps POST there instead of the built-in
+stub. A failed webhook surfaces as `escalationFailed` — never silently
+swallowed. Other modalities (haptic, auditory, …) remain stubs to replace
+with your actuator integrations in `src/execution/adapters/`.
 
 ---
 

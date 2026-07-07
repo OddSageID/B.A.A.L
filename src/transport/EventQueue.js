@@ -1,11 +1,9 @@
 import amqplib from 'amqplib';
 import { TOPOLOGY } from './topology.js';
 import { validateEvent, EventValidationError } from './validateEvent.js';
-import { EventAuth } from './EventAuth.js';
+import { EventAuth, KEY_HEADER, SIG_HEADER } from './EventAuth.js';
 import { BaalLogger } from '../utils/BaalLogger.js';
 
-const SIG_HEADER = 'x-baal-signature';
-const KEY_HEADER = 'x-baal-key-id';
 const DEDUP_MAX_ENTRIES = 10000;
 
 export class EventQueue {

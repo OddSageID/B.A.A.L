@@ -1,4 +1,27 @@
 services:
+  # The daemon itself — opt in with: docker compose --profile full up
+  # Production mode requires BAAL_INGEST_KEYS (and BAAL_ADMIN_TOKEN for the
+  # admin API) in your shell or a .env file next to this compose file.
+  baal:
+    profiles: ['full']
+    build: .
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    environment:
+      PGHOST: postgres
+      PGDATABASE: baal
+      PGUSER: baal
+      PGPASSWORD: baal_dev
+      RABBITMQ_URL: amqp://rabbitmq
+      REDIS_URL: redis://redis:6379
+      BAAL_INGEST_KEYS: ${BAAL_INGEST_KEYS:-}
+      BAAL_ADMIN_TOKEN: ${BAAL_ADMIN_TOKEN:-}
+      BAAL_NOTIFY_WEBHOOK_URL: ${BAAL_NOTIFY_WEBHOOK_URL:-}
+    ports:
+      - '127.0.0.1:8787:8787'
+
   postgres:
     image: postgres:16-alpine
     environment:

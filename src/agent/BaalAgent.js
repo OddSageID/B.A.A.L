@@ -3,6 +3,8 @@ import { GazeEngine }        from '../perception/GazeEngine.js';
 import { StormEngine }       from '../inference/StormEngine.js';
 import { CloudPlanner }      from '../planning/CloudPlanner.js';
 import { WarExecutor, Outcome } from '../execution/WarExecutor.js';
+import { WebhookNotificationAdapter } from '../execution/adapters/DeliveryAdapters.js';
+import { Modality } from '../planning/CloudPlanner.js';
 import { ResolutionMonitor } from '../execution/ResolutionMonitor.js';
 import { AnatBoundary }      from '../neuroshield/AnatBoundary.js';
 import { BaselineVault }     from '../memory/BaselineVault.js';
@@ -80,6 +82,13 @@ export class BaalAgent {
     this.#anat    = deps.boundary ?? new AnatBoundary({ consentProvider: this.#vault });
     this.#monitor = deps.monitor ?? await ResolutionMonitor.create();
     this.#war.setMonitor(this.#monitor);
+
+    const webhookUrl = this.config.notifyWebhookUrl ?? process.env.BAAL_NOTIFY_WEBHOOK_URL;
+    if (webhookUrl) {
+      const webhook = new WebhookNotificationAdapter({ url: webhookUrl });
+      this.#war.setDeliveryMap({ [Modality.NOTIFICATION]: (step, sid) => webhook.deliver(step, sid) });
+      this.#logger.info('Notification webhook wired', { url: new URL(webhookUrl).host });
+    }
 
     if (deps.escalationDesk !== undefined) {
       this.#desk = deps.escalationDesk;

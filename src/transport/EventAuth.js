@@ -1,5 +1,9 @@
 import crypto from 'node:crypto';
 
+/** AMQP header names shared by producers and the consuming daemon. */
+export const KEY_HEADER = 'x-baal-key-id';
+export const SIG_HEADER = 'x-baal-signature';
+
 /**
  * Producer authentication for the ingestion boundary.
  *
