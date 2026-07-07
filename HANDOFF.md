@@ -57,10 +57,21 @@ the same suite as a staging soak, point the env at staging:
 BAAL_LIVE=1 RABBITMQ_URL=… PGHOST=… REDIS_URL=… npm run test:live
 ```
 
-What remains manual in this phase: reviewing the first CI `live` run, and the
-two-instance lock-contention check (the CI test proves contention semantics on
-one host; running two daemon processes against one broker is a 5-minute manual
-check with `docker compose --profile full up --scale baal=2`).
+The first live runs paid for themselves immediately — three production-breaking
+bugs invisible to in-memory fakes, all fixed and now regression-guarded:
+
+1. DLQ binding used topic `*` (matches one word) against multi-word
+   dead-letter routing keys — every rejected/poison message was silently
+   dropped by the exchange instead of dead-lettered (`dlq.#` now).
+2. `ON CONFLICT (event_id)` didn't repeat the partial index predicate —
+   Postgres 42P10 on every baseline write carrying an eventId.
+3. Bare `(1 - $4)` made Postgres infer INTEGER for the weight parameter —
+   22P02 on every fractional baseline weight, i.e. all of them.
+
+What remains manual in this phase: the two-instance lock-contention check
+(the CI test proves contention semantics on one host; running two daemon
+processes against one broker is a 5-minute manual check with
+`docker compose --profile full up --scale baal=2`).
 
 ## Phase 2 — One real signal in, one real action out (weeks 2–4)
 
