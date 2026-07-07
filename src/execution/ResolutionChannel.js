@@ -22,6 +22,7 @@ export class ResolutionSignal {
 
 export class ResolutionPublisher {
   #client = null;
+  #connected = false;
   #active = new Set();
 
   static async connect(url = process.env.REDIS_URL ?? 'redis://localhost:6379') {
@@ -29,6 +30,7 @@ export class ResolutionPublisher {
     pub.#client = createClient({ url });
     pub.#client.on('error', (err) => console.error('[ResolutionPublisher] Redis error', err));
     await pub.#client.connect();
+    pub.#connected = true;
     return pub;
   }
 
@@ -42,38 +44,54 @@ export class ResolutionPublisher {
     await this.#client.publish(channelFor(subjectId), signal.serialize());
   }
 
-  async disconnect() { await this.#client.disconnect(); }
+  get connected() { return this.#connected; }
+
+  /** Raw (non-subscribed) client — usable for auxiliary commands like locks. */
+  get client() { return this.#client; }
+
+  async disconnect() { await this.#client.disconnect(); this.#connected = false; }
 }
 
 export class ResolutionSubscriber {
   #client = null;
+  #connected = false;
 
   static async connect(url = process.env.REDIS_URL ?? 'redis://localhost:6379') {
     const sub = new ResolutionSubscriber();
     sub.#client = createClient({ url });
     sub.#client.on('error', (err) => console.error('[ResolutionSubscriber] Redis error', err));
     await sub.#client.connect();
+    sub.#connected = true;
     return sub;
   }
 
   async waitForSignal(subjectId, windowMs) {
-    return new Promise(async (resolve) => {
-      const channel = channelFor(subjectId);
-      let settled = false, timeoutId = null;
-      const cleanup = async (result) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timeoutId);
-        try { await this.#client.unsubscribe(channel); } catch (_) {}
-        resolve(result);
-      };
-      timeoutId = setTimeout(() => cleanup(null), windowMs);
-      await this.#client.subscribe(channel, async (message) => {
-        try { await cleanup(ResolutionSignal.deserialize(message)); }
+    const channel = channelFor(subjectId);
+    let settled = false, timeoutId = null, resolvePromise;
+    const result = new Promise((resolve) => { resolvePromise = resolve; });
+    const cleanup = async (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      try { await this.#client.unsubscribe(channel); }
+      catch (err) { console.error('[ResolutionSubscriber] Unsubscribe failed', err); }
+      resolvePromise(value);
+    };
+    timeoutId = setTimeout(() => cleanup(null), windowMs);
+    try {
+      await this.#client.subscribe(channel, (message) => {
+        try { cleanup(ResolutionSignal.deserialize(message)); }
         catch (err) { console.error('[ResolutionSubscriber] Malformed signal', err); }
       });
-    });
+    } catch (err) {
+      // Subscription failed — resolve as timeout rather than hanging the executor.
+      console.error('[ResolutionSubscriber] Subscribe failed', err);
+      await cleanup(null);
+    }
+    return result;
   }
 
-  async disconnect() { await this.#client.disconnect(); }
+  get connected() { return this.#connected; }
+
+  async disconnect() { await this.#client.disconnect(); this.#connected = false; }
 }

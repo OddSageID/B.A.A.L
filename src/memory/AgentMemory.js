@@ -60,6 +60,14 @@ export class AgentMemory {
   clear(subjectId) { this.#store.delete(subjectId); }
   clearAll()       { this.#store.clear(); }
 
+  /** Evict expired entries for every subject and drop empty buffers. */
+  sweep() {
+    for (const [subjectId, buffer] of this.#store) {
+      this.#evict(buffer);
+      if (buffer.length === 0) this.#store.delete(subjectId);
+    }
+  }
+
   #getOrCreate(subjectId) {
     if (!this.#store.has(subjectId)) this.#store.set(subjectId, []);
     return this.#store.get(subjectId);

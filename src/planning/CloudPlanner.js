@@ -11,6 +11,9 @@ export const Intensity = Object.freeze({
 });
 
 export class CloudPlanner {
+  /** Bump whenever STRATEGIES change — written to the audit trail. */
+  static STRATEGY_VERSION = 'cloud-strategies/1';
+
   #depth = 3;
 
   static STRATEGIES = {
@@ -57,6 +60,7 @@ export class CloudPlanner {
       subjectId, intentClass: primary.class, confidence: primary.confidence, severity,
       steps, stepCount: steps.length,
       requiresHuman: steps.some(s => s.modality === Modality.NOTIFICATION),
+      strategyVersion: CloudPlanner.STRATEGY_VERSION,
       plannedAt: Date.now(), expiresAt: Date.now() + 30000,
     };
   }
@@ -64,13 +68,13 @@ export class CloudPlanner {
   #silentPlan(subjectId, intent) {
     return { subjectId, intentClass: 'UNKNOWN', confidence: intent.primary?.confidence ?? 0, severity: 'low',
       steps: [{ step: 1, modality: Modality.SILENT_LOG, intensity: Intensity.WHISPER, cue: 'low_confidence_observation', rationale: 'Insufficient confidence', delayMs: 0 }],
-      stepCount: 1, requiresHuman: false, plannedAt: Date.now(), expiresAt: Date.now() + 30000 };
+      stepCount: 1, requiresHuman: false, strategyVersion: CloudPlanner.STRATEGY_VERSION, plannedAt: Date.now(), expiresAt: Date.now() + 30000 };
   }
 
   #unknownIntentPlan(subjectId, intent) {
     return { subjectId, intentClass: 'UNKNOWN', confidence: intent.primary?.confidence ?? 0, severity: intent.severity,
       steps: [{ step: 1, modality: Modality.SILENT_LOG, intensity: Intensity.WHISPER, cue: 'unclassified_pattern', rationale: 'Pattern detected but not classified', delayMs: 0 }],
-      stepCount: 1, requiresHuman: false, plannedAt: Date.now(), expiresAt: Date.now() + 30000 };
+      stepCount: 1, requiresHuman: false, strategyVersion: CloudPlanner.STRATEGY_VERSION, plannedAt: Date.now(), expiresAt: Date.now() + 30000 };
   }
 
   #applyContextModifiers(steps, session) {

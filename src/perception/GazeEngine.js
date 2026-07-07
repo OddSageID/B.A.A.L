@@ -46,8 +46,17 @@ export class GazeEngine {
     };
   }
 
-  computeDeviation(signal, baseline) {
+  /**
+   * minSamples: below this per-dimension sample count the baseline is still
+   * calibrating — inference on an immature baseline is noise, so nothing is
+   * significant yet (fail toward observation, never toward intervention).
+   */
+  computeDeviation(signal, baseline, { minSamples = 0 } = {}) {
     if (!baseline?.dimensions) return { significant: false, reason: 'no_baseline', dimensions: {} };
+    if (minSamples > 0) {
+      const immature = Object.values(baseline.dimensions).some(d => (d.sampleCount ?? 0) < minSamples);
+      if (immature) return { significant: false, reason: 'calibrating', dimensions: {} };
+    }
     const dims = {};
     let maxSeverity = 'none', significantCount = 0;
     for (const [dim, value] of Object.entries(signal.dimensions)) {
@@ -64,5 +73,21 @@ export class GazeEngine {
       if (order.indexOf(severity) > order.indexOf(maxSeverity)) maxSeverity = severity;
     }
     return { significant: significantCount >= 2 || maxSeverity === 'critical', severity: maxSeverity, dimensions: dims, triggeredAt: Date.now() };
+  }
+
+  /**
+   * Baseline-poisoning defense: compares each dimension's adaptive mean to the
+   * reference pinned at calibration. A slow adversarial (or natural) walk of
+   * the baseline shows up here long before it normalizes dangerous states.
+   */
+  detectDrift(baseline, { driftThreshold = 0.2 } = {}) {
+    if (!baseline?.dimensions) return [];
+    const drifted = [];
+    for (const [dim, stats] of Object.entries(baseline.dimensions)) {
+      if (stats.referenceMean == null) continue;
+      const drift = Math.abs(stats.mean - stats.referenceMean);
+      if (drift > driftThreshold) drifted.push({ dim, mean: stats.mean, referenceMean: stats.referenceMean, drift });
+    }
+    return drifted;
   }
 }

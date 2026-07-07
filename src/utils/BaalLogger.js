@@ -43,7 +43,7 @@ export class BaalLogger {
   #jsonMode  = false;
   #component = null;
 
-  constructor({ name = 'BAAL', level = 'INFO', component = null } = {}) {
+  constructor({ name = 'BAAL', level = process.env.LOG_LEVEL ?? 'INFO', component = null } = {}) {
     this.#name      = name;
     this.#level     = LEVEL[level.toUpperCase()] ?? LEVEL.INFO;
     this.#component = component;

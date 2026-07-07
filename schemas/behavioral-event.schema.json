@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://baal.local/schemas/behavioral-event.schema.json",
+  "type": "object",
+  "required": ["eventId", "subjectId", "source", "type", "payload", "timestamp"],
+  "properties": {
+    "eventId": { "type": "string", "minLength": 1 },
+    "subjectId": { "type": "string", "minLength": 1 },
+    "source": { "type": "string", "enum": ["behavioral", "eeg", "biometric", "interaction"] },
+    "type": { "type": "string", "minLength": 1 },
+    "timestamp": { "type": "number", "exclusiveMinimum": 0 },
+    "payload": {
+      "type": "object",
+      "properties": {
+        "cognitiveLoad": { "type": "number", "minimum": 0, "maximum": 1 },
+        "emotionalValence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "arousal": { "type": "number", "minimum": 0, "maximum": 1 },
+        "reactionTimeMs": { "type": "number", "minimum": 0 },
+        "attentionScore": { "type": "number", "minimum": 0, "maximum": 1 },
+        "systemMode": { "type": "number", "minimum": 0, "maximum": 1 },
+        "hesitationMs": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
