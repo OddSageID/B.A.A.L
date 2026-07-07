@@ -244,12 +244,17 @@ per-modality grants, and the intensity ceiling.
 ### Testing
 
 ```bash
-npm test        # node:test — unit + integration, zero test dependencies
-npm run check   # syntax-check every source file
+npm test                 # unit + integration — in-memory, no services needed
+BAAL_LIVE=1 npm run test:live   # live transport path — needs real services
+npm run check            # syntax-check every source file
 ```
 
 The integration suite drives the real Gaze → Storm → Cloud → Anat → War
 pipeline against in-memory fakes at the Postgres/RabbitMQ/Redis boundaries.
+The live suite verifies what fakes cannot — AMQP signature headers, DLQ
+policy, durable dedup, migrations, Redis lock contention — and runs in CI
+against service containers on every push. Pointed at staging via env, it
+doubles as the deployment soak test.
 
 ---
 

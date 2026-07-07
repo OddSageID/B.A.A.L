@@ -48,10 +48,19 @@ brokers**, and each has a specific check:
 | Redis lock under contention | Run two daemon instances, flood one subject → exactly one intervention (grep for "held by another instance") |
 | Escalation desk consumes the real queue | Trigger a veto → `baalctl escalations` shows it |
 
-Write the soak as a small script using `BaalProducer` (calibrate → consent via
-`baalctl` → overload → observe), then **add a CI job with service containers**
-(postgres/rabbitmq/redis in GitHub Actions) so the live path stays tested.
-This is the highest-value engineering task remaining.
+**Status: automated.** `tests/live/transport.live.test.js` covers every row of
+this table and the CI `live` job runs it against real service containers on
+every push — check the Actions tab on PR #2 for the first execution. To use
+the same suite as a staging soak, point the env at staging:
+
+```bash
+BAAL_LIVE=1 RABBITMQ_URL=… PGHOST=… REDIS_URL=… npm run test:live
+```
+
+What remains manual in this phase: reviewing the first CI `live` run, and the
+two-instance lock-contention check (the CI test proves contention semantics on
+one host; running two daemon processes against one broker is a 5-minute manual
+check with `docker compose --profile full up --scale baal=2`).
 
 ## Phase 2 — One real signal in, one real action out (weeks 2–4)
 

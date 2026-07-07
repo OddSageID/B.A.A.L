@@ -12,7 +12,8 @@
     "start": "node index.js",
     "dev": "node --watch index.js",
     "demo": "node demo/run-demo.js",
-    "test": "node --test \"tests/**/*.test.js\"",
+    "test": "node --test \"tests/unit/**/*.test.js\" \"tests/integration/**/*.test.js\"",
+    "test:live": "node --test \"tests/live/**/*.test.js\"",
     "check": "find src bin demo index.js -name '*.js' -exec node --check {} +"
   },
   "dependencies": {
